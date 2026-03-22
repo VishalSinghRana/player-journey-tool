@@ -189,6 +189,39 @@ ALL_EVENTS    = list(EVENT_COLORS.keys())
 MOVE_EVENTS   = ["Position","BotPosition"]
 COMBAT_EVENTS = [e for e in ALL_EVENTS if e not in MOVE_EVENTS]
 
+# Heatmap overlay descriptions — module-level constant, never recreated on rerun
+OVERLAY_INFO = {
+    "Kill Zones":   ("🔴", "Where kills happened",         "Kill (PvP) + BotKill (player kills bot)"),
+    "Death Zones":  ("🟠", "Where players died",           "Killed (PvP) + BotKilled (by bot) + KilledByStorm"),
+    "High Traffic": ("🔵", "Where players spent time",     "Position + BotPosition movement pings"),
+    "Loot Zones":   ("🟢", "Where loot was picked up",     "Loot pickup events only"),
+}
+
+# Map-specific heatmap bin resolution — larger map = more bins = finer detail
+HEATMAP_BINS = {
+    "AmbroseValley": 48,
+    "GrandRift":     40,
+    "Lockdown":      32,
+}
+
+# Heatmap overlay → events + colorscale (module level — never recreated on rerun)
+HEATMAP_EVTS = {
+    "Kill Zones":   (["Kill","BotKill"],                     "Reds"),
+    "Death Zones":  (["Killed","BotKilled","KilledByStorm"], "Oranges"),
+    "High Traffic": (["Position","BotPosition"],             "Blues"),
+    "Loot Zones":   (["Loot"],                               "Greens"),
+}
+
+# Event label per overlay for reliability bar (module level)
+HEATMAP_EVT_LABELS = {
+    "Kill Zones":"kills", "Death Zones":"deaths",
+    "High Traffic":"movement pings", "Loot Zones":"loot pickups",
+}
+
+def hm_data_hash(hm_map, hm_dates, hm_match_sel):
+    """Stale hash for heatmap — data filters only, NOT overlay type."""
+    return str((hm_map, tuple(hm_dates) if hm_dates else (), hm_match_sel))
+
 # FIX 10: human-readable match label helper
 def match_label(match_id):
     """Show enough of the UUID to be distinguishable, not just a fragment."""
@@ -205,6 +238,7 @@ def init_state():
         "hm_show":False, "hm_result":None,
         "hm_map_used":None, "hm_type_used":"Kill Zones",
         "hm_dates_used":None, "hm_match_used":"All Matches",
+        "hm_filters_hash":None, "hm_fig":None, "hm_fig_hash":None, "hm_evt_count":0,
         "tl_show":False, "tl_data":None,
         "tl_map_used":None, "tl_match_used":None, "tl_total_s":1.0,
         "st_show":False, "st_data":None,
@@ -388,6 +422,10 @@ def build_map_fig(df_in, map_id, show_paths=True, show_events=True, active_event
 
 
 def build_heatmap_fig(df_in, htype, map_id):
+    """
+    Returns (fig, event_count) — event_count lets the UI show
+    how many events contributed so the designer can judge reliability.
+    """
     fig = go.Figure()
     b64 = get_minimap_b64(map_id)
     if b64:
@@ -396,27 +434,39 @@ def build_heatmap_fig(df_in, htype, map_id):
             xref="x",yref="y",x=0,y=0,sizex=1024,sizey=1024,
             sizing="stretch",opacity=0.5,layer="below",
         )
-    evts_cs = {
-        "Kill Zones":   (["Kill","BotKill"],                     "Reds"),
-        "Death Zones":  (["Killed","BotKilled","KilledByStorm"], "Oranges"),
-        "High Traffic": (["Position","BotPosition"],             "Blues"),
-        "Loot Zones":   (["Loot"],                               "Greens"),
-    }
-    evts, cs = evts_cs.get(htype,([],"Blues"))
+
+    evts, cs = HEATMAP_EVTS.get(htype, ([], "Blues"))
     heat = df_in[df_in["event"].isin(evts)]
+    event_count = len(heat)
+
     if not heat.empty:
-        hx = np.clip(heat["pixel_x"].values,0,1023)
-        hy = np.clip(heat["pixel_y"].values,0,1023)
-        H,xe,ye = np.histogram2d(hx,hy,bins=32,range=[[0,1024],[0,1024]])
+        hx = np.clip(heat["pixel_x"].values, 0, 1023)
+        hy = np.clip(heat["pixel_y"].values, 0, 1023)
+        # FIX 5: adaptive bin count per map — finer for larger maps
+        bins = HEATMAP_BINS.get(map_id, 36)
+        H, xe, ye = np.histogram2d(hx, hy, bins=bins,
+                                   range=[[0,1024],[0,1024]])
         fig.add_trace(go.Heatmap(
             x=(xe[:-1]+xe[1:])/2, y=(ye[:-1]+ye[1:])/2, z=H.T,
             colorscale=cs, opacity=0.7, showscale=True,
-            colorbar=dict(tickfont=dict(color="#c9d1d9"),
-                          bgcolor="#161b22",bordercolor="#21262d"),
-            hovertemplate="Count: %{z}<extra></extra>",
+            # FIX 7: colorbar title so user knows what the scale means
+            colorbar=dict(
+                title=dict(text="Event Count", font=dict(color="#8b949e",size=11)),
+                tickfont=dict(color="#c9d1d9"),
+                bgcolor="#161b22", bordercolor="#21262d",
+            ),
+            hovertemplate="Event count: %{z}<extra></extra>",
         ))
-    _map_layout(fig)
-    return fig
+
+    # FIX 2: heatmap-specific layout — no legend (colorbar handles it)
+    fig.update_layout(
+        xaxis=dict(range=[0,1024],showgrid=False,zeroline=False,showticklabels=False),
+        yaxis=dict(range=[1024,0],showgrid=False,zeroline=False,showticklabels=False),
+        plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+        showlegend=False,   # heatmap uses colorbar, not legend
+        margin=dict(l=0,r=0,t=0,b=0), height=680, dragmode="pan",
+    )
+    return fig, event_count
 
 # ── Header ────────────────────────────────────────────────────────────────────
 def render_header():
@@ -913,7 +963,7 @@ def render_heatmap(df):
         st.caption("← Select a map to begin")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── GROUP 2: Date checkboxes — same pattern as Map View ───────────────────
+    # ── GROUP 2: Date checkboxes ───────────────────
     st.markdown('<div class="filter-group">', unsafe_allow_html=True)
     st.markdown('<div class="filter-group-label">Date(s) — uncheck to exclude</div>',
                 unsafe_allow_html=True)
@@ -987,22 +1037,12 @@ def render_heatmap(df):
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ── GROUP 4: Overlay type ─────────────────────────────────────────────────
-    OVERLAY_INFO = {
-        "Kill Zones":   ("🔴", "Where kills happened",        "Includes: Kill (PvP), BotKill (player kills bot)"),
-        "Death Zones":  ("🟠", "Where players died",          "Includes: Killed (PvP death), BotKilled (killed by bot), KilledByStorm"),
-        "High Traffic": ("🔵", "Where players spent most time","Includes: Position & BotPosition movement pings"),
-        "Loot Zones":   ("🟢", "Where loot was picked up",    "Includes: Loot pickup events"),
-    }
-
     st.markdown('<div class="filter-group">', unsafe_allow_html=True)
     st.markdown('<div class="filter-group-label">Overlay Type</div>', unsafe_allow_html=True)
-
     hm_type = st.radio(
         "Overlay", list(OVERLAY_INFO.keys()),
         horizontal=True, key="hm_type_sel", label_visibility="collapsed",
     )
-
-    # Show description for the selected overlay type
     if hm_type:
         icon, summary, detail = OVERLAY_INFO[hm_type]
         st.markdown(
@@ -1015,24 +1055,51 @@ def render_heatmap(df):
         )
     st.markdown('</div>', unsafe_allow_html=True)
 
-    show_clicked = st.button("▶  Show Heatmap", key="hm_show_btn", type="primary")
+    # Stale detection — includes overlay type so banner shows when ANY filter changes
+    # Even though overlay doesn't re-query data, the user expects feedback
+    hm_hash = str((hm_data_hash(hm_map, hm_dates, hm_match_sel), hm_type))
+    hm_is_stale = (
+        st.session_state["hm_show"]
+        and st.session_state.get("hm_filters_hash") is not None
+        and st.session_state.get("hm_filters_hash") != hm_hash
+    )
+    if hm_is_stale:
+        st.markdown(
+            '<div class="stale-banner">'
+            '⚠️  Filters changed — click <b>Show Heatmap</b> to refresh.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    sb1, _, sb2 = st.columns([2, 6, 1])
+    with sb1:
+        show_clicked = st.button("▶  Show Heatmap", key="hm_show_btn",
+                                 type="primary", use_container_width=True)
+    with sb2:
+        st.write("")  # spacer
     if show_clicked:
         if not hm_map:
             st.error("⬆️  Please select a Map first.")
         else:
-            with st.spinner("Building heatmap…"):
-                # Apply filters: map + dates + match
-                data = df[df["map_id"] == hm_map].copy()
+            with st.spinner("Querying data…"):
+                # FIX 8: apply all filters first, then copy once
+                mask = df["map_id"] == hm_map
                 if hm_dates:
-                    data = data[data["date_str"].isin(hm_dates)]
+                    mask &= df["date_str"].isin(hm_dates)
                 if hm_match:
-                    data = data[data["match_id_clean"] == hm_match]
-            st.session_state["hm_result"]    = data
-            st.session_state["hm_map_used"]  = hm_map
-            st.session_state["hm_type_used"] = hm_type
-            st.session_state["hm_dates_used"]= hm_dates
-            st.session_state["hm_match_used"]= hm_match_sel
-            st.session_state["hm_show"]      = True
+                    mask &= df["match_id_clean"] == hm_match
+                data = df[mask].copy()
+            st.session_state["hm_result"]       = data
+            st.session_state["hm_map_used"]     = hm_map
+            st.session_state["hm_type_used"]    = hm_type
+            st.session_state["hm_dates_used"]   = hm_dates
+            st.session_state["hm_match_used"]   = hm_match_sel
+            st.session_state["hm_show"]         = True
+            st.session_state["hm_filters_hash"] = hm_hash
+            # FIX 9: invalidate cached figure when data changes
+            st.session_state["hm_fig"]          = None
+            st.session_state["hm_fig_hash"]     = None
+            st.rerun()  # commit all session state before rendering
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1044,20 +1111,40 @@ def render_heatmap(df):
           <div class="hint">1. Select a <b>Map</b> above</div>
           <div class="hint">2. Optionally filter by <b>Date</b> or <b>Match</b></div>
           <div class="hint">3. Choose an <b>Overlay Type</b></div>
-          <div class="hint">4. Click <b>▶ Show Heatmap</b></div>
+          <div class="hint">4. Click <b>▶ Show Heatmap</b> — the button is just below</div>
+          <div style="margin-top:20px;font-size:0.75rem;color:#30363d;">
+            Tip: The heatmap is interactive — scroll to zoom, drag to pan
+          </div>
         </div>
         """, unsafe_allow_html=True)
         return
 
-    data   = st.session_state["hm_result"]
-    map_u  = st.session_state["hm_map_used"]
-    htype  = st.session_state["hm_type_used"]
-    dates_u= st.session_state.get("hm_dates_used")
-    match_u= st.session_state.get("hm_match_used","All Matches")
+    data    = st.session_state["hm_result"]
+    map_u   = st.session_state["hm_map_used"]
+    # Read overlay from current widget — not stored — so changing overlay
+    # immediately updates the figure without re-clicking Show Heatmap
+    htype   = st.session_state.get("hm_type_sel", st.session_state["hm_type_used"])
+    dates_u = st.session_state.get("hm_dates_used")
+    match_u = st.session_state.get("hm_match_used","All Matches")
 
     if data is None or data.empty:
         st.warning("No data found. Try broadening your filters.")
         return
+
+    # ── Metric cards ─────────────────────────────────────────────────────────
+    hm1, hm2, hm3, hm4 = st.columns(4)
+    hm1.metric("Total Records", f"{len(data):,}",
+               help="All events in this map/date/match selection.")
+    hm2.metric("Human Players",
+               int(data[~data["is_bot"]]["user_id_from_file"].nunique()),
+               help="Unique human players in this heatmap.")
+    hm3.metric("Bots",
+               int(data[data["is_bot"]]["user_id_from_file"].nunique()),
+               help="Unique bots in this heatmap.")
+    hm4.metric("Matches",
+               int(data["match_id_clean"].nunique()),
+               help="Number of matches contributing to this heatmap.")
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # Active filter summary
     dates_label = ", ".join(dates_u) if dates_u else "All dates"
@@ -1074,6 +1161,51 @@ def render_heatmap(df):
         unsafe_allow_html=True,
     )
 
+    # FIX 1 & 9: Cache heatmap figure by (data hash + overlay type)
+    # Only rebuild when overlay type changes — data stays the same
+    # Deterministic cache key — id(data) changes every rerun, use hash instead
+    # Use locally computed hm_hash (not session state) so the key is always
+    # based on current filter values, not potentially stale session state
+    hm_fig_key = str((hm_hash, htype))
+    if (st.session_state.get("hm_fig") is None or
+            st.session_state.get("hm_fig_hash") != hm_fig_key):
+        # FIX 11: st.status for build feedback
+        with st.status("🔥 Building heatmap — please wait…", expanded=True) as hm_status:
+            st.write(f"Analysing {len(data):,} data points…")
+            fig, event_count = build_heatmap_fig(data, htype, map_u)
+            st.session_state["hm_fig"]      = fig
+            st.session_state["hm_fig_hash"] = hm_fig_key
+            st.session_state["hm_evt_count"]= event_count
+            hm_status.update(label="✅ Heatmap ready", state="complete", expanded=False)
+    else:
+        fig         = st.session_state["hm_fig"]
+        event_count = st.session_state.get("hm_evt_count", 0)
+
+    # Show event count so designer can assess reliability
+    evt_label = HEATMAP_EVT_LABELS.get(htype, "events")
+    reliability = ("✅ Good sample size" if event_count >= 500
+                   else "⚠️ Small sample — interpret with caution" if event_count >= 50
+                   else "🔴 Very few events — results may not be meaningful")
+    n_matches = int(data["match_id_clean"].nunique())
+    if n_matches == 1 and event_count < 500:
+        reliability += " (single match)"
+    st.markdown(
+        f'<div class="info-bar">'
+        f'📊 {event_count:,} {evt_label} contributing to this heatmap &nbsp;·&nbsp; '
+        f'{reliability}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if hm_is_stale:
+        st.markdown(
+            '<div class="stale-map-hint">'
+            '⚠️  This heatmap reflects previous filters. '
+            'Scroll up and click Show Heatmap to update.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
     st.markdown(
         '<div style="font-size:0.72rem;color:#444d56;margin-bottom:4px;'
         'font-family:Share Tech Mono,monospace;">'
@@ -1082,7 +1214,6 @@ def render_heatmap(df):
         unsafe_allow_html=True,
     )
 
-    fig = build_heatmap_fig(data, htype, map_u)
     st.plotly_chart(fig, use_container_width=True,
                     config={"scrollZoom":True,"displayModeBar":True,
                             "modeBarButtonsToRemove":["select2d","lasso2d"]})
