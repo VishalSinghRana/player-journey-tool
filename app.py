@@ -160,7 +160,7 @@ div[data-testid="stButton"] button[kind="secondary"]:hover{
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 DATA_PATH   = "data/all_events.parquet"
-MINIMAP_DIR = os.path.join("player_data", "minimaps")
+MINIMAP_DIR = os.path.join("assets", "minimaps")
 
 MAP_CONFIG = {
     "AmbroseValley": {"img": "AmbroseValley_Minimap.png"},
