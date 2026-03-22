@@ -241,7 +241,7 @@ def init_state():
         "hm_filters_hash":None, "hm_fig":None, "hm_fig_hash":None, "hm_evt_count":0,
         "tl_show":False, "tl_data":None,
         "tl_map_used":None, "tl_match_used":None, "tl_total_s":1.0,
-        "st_show":False, "st_data":None,
+        "st_show":False, "st_data":None,"st_filters_hash":None, "st_charts":None, "st_charts_hash":None,"st_map_used":"All Maps", "st_dates_used":None, "st_dates_label":"All dates", "st_insight":None,
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -1388,107 +1388,427 @@ def render_timeline(df):
 # TAB 4 — STATS
 # ─────────────────────────────────────────────────────────────────────────────
 def render_stats(df):
-    st.markdown("#### 📊 Stats Filters")
-    c1,c2 = st.columns(2)
-    with c1:
-        st_map = st.selectbox("Map", ["All Maps"]+MAPS, key="st_map_sel")
-    with c2:
-        dates_list = get_dates_list(df)
-        st_dates_sel = st.multiselect(
-            "Date(s)", dates_list,
-            placeholder="All dates shown — pick to filter",
-            key="st_dates_sel",
-        )
-        st_dates = st_dates_sel if st_dates_sel else None
+    dates_list = get_dates_list(df)
 
-    show_clicked = st.button("▶  Show Stats", key="st_show_btn", type="primary")
+    # FIX 14: styled header consistent with other tabs
+    st.markdown("""
+    <div style="margin-bottom:14px;">
+      <span style="font-family:'Rajdhani',sans-serif;font-size:1.15rem;font-weight:700;
+                   color:#e6edf3;letter-spacing:0.06em;">📊 Stats</span>
+      <span style="font-family:'Share Tech Mono',monospace;font-size:0.68rem;
+                   color:#444d56;margin-left:10px;">Select filters, then click Show Stats</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # FIX 2: Map — radio buttons consistent with Map View and Heatmap
+    st.markdown('<div class="filter-group">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-group-label">Map</div>', unsafe_allow_html=True)
+    st_map = st.radio(
+        "Map", ["All Maps"] + MAPS, index=0,
+        horizontal=True, key="st_map_radio",
+        label_visibility="collapsed",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # FIX 3: Date — checkboxes with All master toggle consistent with other tabs
+    st.markdown('<div class="filter-group">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-group-label">Date(s) — uncheck to exclude</div>',
+                unsafe_allow_html=True)
+
+    st.session_state.setdefault("st_date_all", True)
+    for _d in dates_list:
+        st.session_state.setdefault(f"st_date_{_d}", True)
+
+    def _on_st_date_all_change():
+        new_val = st.session_state["st_date_all"]
+        for _d in dates_list:
+            st.session_state[f"st_date_{_d}"] = new_val
+
+    def _on_st_date_individual_change():
+        all_on = all(st.session_state.get(f"st_date_{_d}", True) for _d in dates_list)
+        st.session_state["st_date_all"] = all_on
+
+    st_da_cols = st.columns([1] + [1]*len(dates_list))
+    with st_da_cols[0]:
+        st_all_dates = st.checkbox(
+            "All", key="st_date_all",
+            on_change=_on_st_date_all_change,
+        )
+    st_date_checks = {}
+    for i, d in enumerate(dates_list):
+        with st_da_cols[i+1]:
+            st_date_checks[d] = st.checkbox(
+                d, key=f"st_date_{d}",
+                disabled=st_all_dates,
+                on_change=_on_st_date_individual_change,
+            )
+
+    if st_all_dates:
+        st_dates = None
+    else:
+        sel = [d for d,v in st_date_checks.items() if v]
+        st_dates = sel if sel else None
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # FIX 4: Stale detection
+    st_hash = str((st_map, tuple(st_dates) if st_dates else ()))
+    st_is_stale = (
+        st.session_state["st_show"]
+        and st.session_state.get("st_filters_hash") is not None
+        and st.session_state.get("st_filters_hash") != st_hash
+    )
+    if st_is_stale:
+        st.markdown(
+            '<div class="stale-banner">'
+            '⚠️  Filters changed — click <b>Show Stats</b> to refresh.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    sb1, _, sb2 = st.columns([2, 6, 1])
+    with sb1:
+        show_clicked = st.button("▶  Show Stats", key="st_show_btn",
+                                 type="primary", use_container_width=True)
+    with sb2:
+        st.write("")
     if show_clicked:
         with st.spinner("Computing stats…"):
-            data = df.copy()
+            # FIX 1: mask first, copy once
+            mask = pd.Series([True]*len(df), index=df.index)
             if st_map != "All Maps":
-                data = data[data["map_id"]==st_map]
+                mask &= df["map_id"] == st_map
             if st_dates:
-                data = data[data["date_str"].isin(st_dates)]
-        st.session_state["st_data"] = data
-        st.session_state["st_show"] = True
+                mask &= df["date_str"].isin(st_dates)
+            data = df[mask].copy()
+        st.session_state["st_data"]         = data
+        st.session_state["st_show"]         = True
+        st.session_state["st_filters_hash"] = st_hash
+        # FIX 9 & 17: invalidate chart cache on new data
+        st.session_state["st_charts"]       = None
+        st.session_state["st_insight"]      = None
+        st.session_state["st_dates_used"]   = st_dates
+        st.session_state["st_dates_label"]  = ", ".join(st_dates) if st_dates else "All dates"
+        st.session_state["st_map_used"]     = st_map
+        st.rerun()
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
+    # FIX 15: rich empty state
     if not st.session_state["st_show"]:
         st.markdown("""
         <div class="empty-state">
           <div style="font-size:3rem;margin-bottom:12px;">📊</div>
           <div class="title">No stats loaded yet</div>
-          <div class="hint">Select filters above and click Show Stats</div>
+          <div class="hint">1. Select a <b>Map</b> — or leave on All Maps for full dataset</div>
+          <div class="hint">2. Optionally filter by <b>Date</b></div>
+          <div class="hint">3. Click <b>▶ Show Stats</b></div>
         </div>
         """, unsafe_allow_html=True)
         return
 
     data = st.session_state["st_data"]
     if data is None or data.empty:
-        st.warning("No data.")
+        st.warning("No data found. Try broadening your filters.")
         return
 
-    m1,m2,m3,m4 = st.columns(4)
-    m1.metric("Total Events",  f"{len(data):,}")
-    m2.metric("Human Players", int(data[~data["is_bot"]]["user_id_from_file"].nunique()))
-    m3.metric("Matches",       int(data["match_id_clean"].nunique()))
-    m4.metric("Kills",         int(len(data[data["event"].isin(["Kill","BotKill"])])))
-    st.markdown("<br>",unsafe_allow_html=True)
+    # Active filter summary bar — reads values already stored before rerun
+    st.markdown(
+        f'<div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;'
+        f'padding:10px 16px;margin-bottom:14px;font-family:Share Tech Mono,monospace;'
+        f'font-size:0.75rem;color:#8b949e;">'
+        f'<span style="color:#e6edf3;font-weight:600;">Currently showing:</span>'
+        f' &nbsp; 🗺️ <span style="color:#58a6ff">{st.session_state.get("st_map_used","All Maps")}</span>'
+        f' &nbsp;·&nbsp; 📅 <span style="color:#58a6ff">{st.session_state.get("st_dates_label","All dates")}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
-    r1,r2 = st.columns(2)
+    # FIX 7 & 8: 5 metric cards, game events separate from total
+    game_events = data[~data["event"].isin(MOVE_EVENTS)]
+    m1,m2,m3,m4,m5 = st.columns(5)
+    m1.metric("Game Events",   f"{len(game_events):,}",
+              help="Combat + loot events only. Excludes movement GPS pings.")
+    m2.metric("Human Players", int(data[~data["is_bot"]]["user_id_from_file"].nunique()),
+              help="Unique human players in this selection.")
+    m3.metric("Bots",          int(data[data["is_bot"]]["user_id_from_file"].nunique()),
+              help="Unique bot opponents in this selection.")
+    m4.metric("Matches",       int(data["match_id_clean"].nunique()),
+              help="Unique matches in this selection.")
+    m5.metric("Kills",         int(len(data[data["event"].isin(["Kill","BotKill"])])),
+              help="Player kills (human + bot kills).")
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+    # FIX 9: Cache all charts together under one key
+    charts_key = st.session_state.get("st_filters_hash","")
+    if st.session_state.get("st_charts") is None or        st.session_state.get("st_charts_hash") != charts_key:
+
+        with st.status("📊 Building charts — please wait…", expanded=True) as st_status:
+            st.write(f"Processing {len(data):,} records…")
+
+            # Chart 1 — Game Event Distribution (FIX 6: excludes Position/BotPosition)
+            game_only = data[~data["event"].isin(MOVE_EVENTS)]
+            ec = game_only["event"].value_counts().reset_index()
+            ec.columns = ["event","count"]
+            f1 = px.bar(ec, x="count", y="event", orientation="h", color="event",
+                       color_discrete_map=EVENT_COLORS,
+                       title="Game Event Distribution", height=320)
+            f1.update_layout(
+                plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+                font=dict(color="#c9d1d9"), showlegend=False,
+                xaxis=dict(gridcolor="#21262d", title="Count"),
+                yaxis=dict(gridcolor="#21262d", title=""),
+                title_font=dict(color="#e6edf3"),
+                margin=dict(l=10,r=10,t=40,b=10),
+            )
+
+            # Chart 2 — Events per Day with partial day annotation
+            dc = data.groupby("date_str")["event"].count().reset_index()
+            dc.columns = ["date","events"]
+            f2 = px.bar(dc, x="date", y="events",
+                       title="Events per Day",
+                       color_discrete_sequence=["#58a6ff"], height=320)
+            # FIX 11: annotate Feb 14 as partial day
+            partial_date = "Feb 14"
+            if partial_date in dc["date"].values:
+                f2.add_annotation(
+                    x=partial_date, y=dc[dc["date"]==partial_date]["events"].values[0],
+                    text="Partial day", showarrow=True, arrowhead=2,
+                    font=dict(color="#f0a500", size=11),
+                    arrowcolor="#f0a500", ax=0, ay=-30,
+                )
+            f2.update_layout(
+                plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+                font=dict(color="#c9d1d9"),
+                xaxis=dict(gridcolor="#21262d", title=""),
+                yaxis=dict(gridcolor="#21262d", title="Event Count"),
+                title_font=dict(color="#e6edf3"),
+                margin=dict(l=10,r=10,t=40,b=10),
+            )
+
+            # Chart 3 — Human vs Bot Events (FIX 6: use assign not copy)
+            hbc = (data.assign(type=data["is_bot"].map({True:"Bot",False:"Human"}))
+                   .groupby(["type","event"])["event"].count().reset_index(name="count"))
+            f3 = px.bar(hbc, x="event", y="count", color="type", barmode="group",
+                       color_discrete_map={"Human":"#58a6ff","Bot":"#8b949e"},
+                       title="Human vs Bot Events", height=320)
+            f3.update_layout(
+                plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+                font=dict(color="#c9d1d9"),
+                xaxis=dict(gridcolor="#21262d", tickangle=30, title=""),
+                yaxis=dict(gridcolor="#21262d", title="Count"),
+                title_font=dict(color="#e6edf3"),
+                legend=dict(bgcolor="#161b22", bordercolor="#21262d", borderwidth=1),
+                margin=dict(l=10,r=10,t=40,b=60),
+            )
+
+            # Chart 4 — Top 10 Killers
+            kdf = data[data["event"].isin(["Kill","BotKill"]) & ~data["is_bot"]]
+            top = (kdf.groupby("user_id_from_file")["event"]
+                   .count().reset_index(name="kills")
+                   .sort_values("kills", ascending=False).head(10)
+                   .reset_index(drop=True))
+            top["label"]    = ["Player " + str(i+1) for i in range(len(top))]
+            top["short_id"] = top["user_id_from_file"].str[:8] + "…" + top["user_id_from_file"].str[-4:]
+            f4 = px.bar(top, x="kills", y="label", orientation="h", color="kills",
+                       color_continuous_scale="Reds",
+                       title="Top 10 Human Killers", height=320,
+                       custom_data=["user_id_from_file","short_id"])
+            # Hover shows full UUID so designer can cross-reference with Timeline tab
+            f4.update_traces(
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Kills: %{x}<br>"
+                    "User ID: %{customdata[1]}<br>"
+                    "<span style='font-size:10px;color:#8b949e'>Full ID: %{customdata[0]}</span>"
+                    "<extra></extra>"
+                )
+            )
+            f4.update_layout(
+                plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+                font=dict(color="#c9d1d9"),
+                xaxis=dict(gridcolor="#21262d", title="Kill Count"),
+                yaxis=dict(gridcolor="#21262d", title="", autorange="reversed"),
+                title_font=dict(color="#e6edf3"),
+                coloraxis_showscale=False,
+                margin=dict(l=10,r=10,t=40,b=10),
+            )
+
+            st.session_state["st_charts"]      = (f1, f2, f3, f4, top)
+            st.session_state["st_charts_hash"] = charts_key
+            st_status.update(label="✅ Charts ready", state="complete", expanded=False)
+    else:
+        f1, f2, f3, f4, top = st.session_state["st_charts"]
+
+    # FIX 1,2,3,4,5: Compute insights once, cache in session state
+    if st.session_state.get("st_insight") is None:
+        game_df      = data[~data["event"].isin(MOVE_EVENTS)]
+        total_kills  = int(len(data[data["event"].isin(["Kill","BotKill"])]))
+        total_deaths = int(len(data[data["event"].isin(["Killed","BotKilled","KilledByStorm"])]))
+        storm_deaths = int(len(data[data["event"] == "KilledByStorm"]))
+        n_humans     = int(data[~data["is_bot"]]["user_id_from_file"].nunique())
+        n_bots       = int(data[data["is_bot"]]["user_id_from_file"].nunique())
+        n_matches    = int(data["match_id_clean"].nunique())
+        top_event    = game_df["event"].value_counts().idxmax() if not game_df.empty else "N/A"
+        event_verb   = {"Kill":"killing","Killed":"dying","BotKill":"killing bots",
+                        "BotKilled":"being killed by bots","KilledByStorm":"storm deaths",
+                        "Loot":"looting"}.get(top_event, top_event)
+        kd_ratio     = round(total_kills / total_deaths, 2) if total_deaths > 0 else 0
+        storm_pct    = round(storm_deaths / total_deaths * 100) if total_deaths > 0 else 0
+        bot_ratio    = round(n_bots / n_humans, 1) if n_humans > 0 else 0
+        human_kills  = int(len(data[data["event"]=="Kill"]))
+        bot_kills    = int(len(data[data["event"]=="BotKill"]))
+        balance      = ("balanced"
+                        if abs(human_kills-bot_kills) < 0.3*max(human_kills,bot_kills,1)
+                        else ("humans dominate" if human_kills > bot_kills else "bots dominate"))
+        top3_str     = " · ".join([f"{e} ({c:,})"
+                                   for e,c in game_df["event"].value_counts().head(3).items()])
+        dc_vals      = data.groupby("date_str")["event"].count()
+        st.session_state["st_insight"] = dict(
+            total_kills=total_kills, n_humans=n_humans, n_bots=n_bots,
+            n_matches=n_matches, event_verb=event_verb, kd_ratio=kd_ratio,
+            storm_pct=storm_pct, bot_ratio=bot_ratio, human_kills=human_kills,
+            bot_kills=bot_kills, balance=balance, top3_str=top3_str,
+            max_day=dc_vals.idxmax(), min_day=dc_vals.idxmin(),
+            has_feb14="Feb 14" in dc_vals.index,
+        )
+
+    ins = st.session_state["st_insight"]
+
+    # ── Top-level summary callout ─────────────────────────────────────────────
+    st.markdown(
+        f'<div style="background:#0d1f2d;border:1px solid #1f6feb;border-radius:8px;'
+        f'padding:14px 18px;margin-bottom:16px;font-size:0.82rem;color:#c9d1d9;">'
+        f'<span style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
+        f'color:#58a6ff;">📋 Quick Read</span><br>'
+        f'Across <b>{ins["n_matches"]}</b> matches, <b>{ins["n_humans"]}</b> human players '
+        f'faced <b>{ins["n_bots"]}</b> bots ({ins["bot_ratio"]}x bot ratio). '
+        f'Players were most frequently <b>{ins["event_verb"]}</b>. '
+        f'Kill/Death ratio is <b>{ins["kd_ratio"]}</b> and '
+        f'<b>{ins["storm_pct"]}%</b> of all deaths were caused by the storm.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if st_is_stale:
+        st.markdown(
+            '<div class="stale-map-hint">'
+            '⚠️  These charts reflect previous filters. '
+            'Scroll up and click Show Stats to update.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        '<div style="font-size:0.72rem;color:#444d56;margin-bottom:12px;'
+        'font-family:Share Tech Mono,monospace;">'
+        '🖱 All charts are interactive — hover for details, click legend to filter'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    r1, r2 = st.columns(2)
     with r1:
-        ec = data["event"].value_counts().reset_index()
-        ec.columns = ["event","count"]
-        f = px.bar(ec,x="count",y="event",orientation="h",color="event",
-                   color_discrete_map=EVENT_COLORS,title="Event Distribution",height=320)
-        f.update_layout(plot_bgcolor="#0d1117",paper_bgcolor="#0d1117",
-                        font=dict(color="#c9d1d9"),showlegend=False,
-                        xaxis=dict(gridcolor="#21262d"),yaxis=dict(gridcolor="#21262d"),
-                        title_font=dict(color="#e6edf3"))
-        st.plotly_chart(f,use_container_width=True)
+        # FIX 11: each chart has its own header inside its column
+        st.markdown(
+            '<div style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
+            'color:#e6edf3;margin:8px 0 4px;">What game events are happening?</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div style="font-size:0.78rem;color:#8b949e;margin-bottom:8px;">'
+            f'💡 Top 3: <span style="color:#58a6ff">{ins["top3_str"]}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(f1, use_container_width=True)
+
     with r2:
-        dc = data.groupby("date_str")["event"].count().reset_index()
-        dc.columns = ["date","events"]
-        f2 = px.bar(dc,x="date",y="events",title="Events per Day",
-                    color_discrete_sequence=["#58a6ff"],height=320)
-        f2.update_layout(plot_bgcolor="#0d1117",paper_bgcolor="#0d1117",
-                         font=dict(color="#c9d1d9"),
-                         xaxis=dict(gridcolor="#21262d"),yaxis=dict(gridcolor="#21262d"),
-                         title_font=dict(color="#e6edf3"))
-        st.plotly_chart(f2,use_container_width=True)
+        st.markdown(
+            '<div style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
+            'color:#e6edf3;margin:8px 0 4px;">Is engagement consistent across days?</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div style="font-size:0.78rem;color:#8b949e;margin-bottom:8px;">'
+            f'💡 Most active: <span style="color:#58a6ff">{ins["max_day"]}</span> · '
+            f'Least active: <span style="color:#58a6ff">{ins["min_day"]}</span>'
+            f'{"  · ⚠️ Feb 14 is a partial day" if ins["has_feb14"] else ""}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(f2, use_container_width=True)
 
-    r3,r4 = st.columns(2)
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+    r3, r4 = st.columns(2)
     with r3:
-        hb = data.copy()
-        hb["type"] = hb["is_bot"].map({True:"Bot",False:"Human"})
-        hbc = hb.groupby(["type","event"])["event"].count().reset_index(name="count")
-        f3 = px.bar(hbc,x="event",y="count",color="type",barmode="group",
-                    color_discrete_map={"Human":"#58a6ff","Bot":"#8b949e"},
-                    title="Human vs Bot Events",height=320)
-        f3.update_layout(plot_bgcolor="#0d1117",paper_bgcolor="#0d1117",
-                         font=dict(color="#c9d1d9"),
-                         xaxis=dict(gridcolor="#21262d",tickangle=30),
-                         yaxis=dict(gridcolor="#21262d"),
-                         title_font=dict(color="#e6edf3"),
-                         legend=dict(bgcolor="#161b22"))
-        st.plotly_chart(f3,use_container_width=True)
-    with r4:
-        kdf = data[data["event"].isin(["Kill","BotKill"]) & ~data["is_bot"]]
-        top = (kdf.groupby("user_id_from_file")["event"]
-               .count().reset_index(name="kills")
-               .sort_values("kills",ascending=False).head(10))
-        top["id"] = top["user_id_from_file"].str[:8]+"…"
-        f4 = px.bar(top,x="kills",y="id",orientation="h",color="kills",
-                    color_continuous_scale="Reds",title="Top 10 Killers",height=320)
-        f4.update_layout(plot_bgcolor="#0d1117",paper_bgcolor="#0d1117",
-                         font=dict(color="#c9d1d9"),
-                         xaxis=dict(gridcolor="#21262d"),yaxis=dict(gridcolor="#21262d"),
-                         title_font=dict(color="#e6edf3"),coloraxis_showscale=False)
-        st.plotly_chart(f4,use_container_width=True)
+        st.markdown(
+            '<div style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
+            'color:#e6edf3;margin:8px 0 4px;">Are bots and humans balanced?</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div style="font-size:0.78rem;color:#8b949e;margin-bottom:8px;">'
+            f'💡 Human kills: <span style="color:#58a6ff">{ins["human_kills"]:,}</span> · '
+            f'Bot kills: <span style="color:#58a6ff">{ins["bot_kills"]:,}</span> · '
+            f'Combat appears <span style="color:#58a6ff">{ins["balance"]}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(f3, use_container_width=True)
 
-    with st.expander("🔍 Raw Data Explorer"):
-        st.dataframe(data.head(500),use_container_width=True,height=300)
+    with r4:
+        st.markdown(
+            '<div style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
+            'color:#e6edf3;margin:8px 0 4px;">Who are the most lethal players?</div>',
+            unsafe_allow_html=True,
+        )
+        if not top.empty:
+            top_kills = int(top["kills"].iloc[0])
+            avg_kills = round(top["kills"].mean(), 1)
+            st.markdown(
+                f'<div style="font-size:0.78rem;color:#8b949e;margin-bottom:8px;">'
+                f'💡 Top killer: <span style="color:#ff4444">{top_kills} kills</span> · '
+                f'Average top 10: <span style="color:#58a6ff">{avg_kills} kills</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        st.plotly_chart(f4, use_container_width=True)
+
+        # Player ID lookup table — so designer can find the UUID for each player
+        if not top.empty:
+            with st.expander("🔎 Player ID Lookup — click to see who Player 1, 2… are"):
+                lookup = top[["label","short_id","user_id_from_file","kills"]].copy()
+                lookup.columns = ["Label","Short ID","Full User ID","Kills"]
+                st.dataframe(
+                    lookup,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(38*len(lookup)+38, 420),
+                )
+                st.caption(
+                    "Copy a Full User ID and paste it into the Timeline tab "
+                    "Match dropdown to investigate that player's journey."
+                )
+
+    # ── Raw Data Explorer ─────────────────────────────────────────────────────
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    with st.expander(f"🔍 Raw Data Explorer — {len(data):,} total rows"):
+        col_opts = list(data.columns)
+        selected_cols = st.multiselect(
+            "Columns to show", col_opts,
+            default=["match_id_clean","date_str","map_id","user_id_from_file",
+                     "is_bot","event","pixel_x","pixel_y"],
+            key="st_explorer_cols",
+        )
+        n_rows = st.slider("Rows to display", 50, min(2000, len(data)), 200,
+                           step=50, key="st_explorer_rows")
+        st.caption(f"Showing {n_rows:,} of {len(data):,} rows · Use column headers to sort")
+        st.dataframe(
+            data[selected_cols].head(n_rows),
+            use_container_width=True, height=320,
+        )
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
