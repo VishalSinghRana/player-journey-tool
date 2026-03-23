@@ -241,6 +241,8 @@ def init_state():
         "hm_filters_hash":None, "hm_fig":None, "hm_fig_hash":None, "hm_evt_count":0,
         "tl_show":False, "tl_data":None,
         "tl_map_used":None, "tl_match_used":None, "tl_total_s":1.0,
+        "tl_combat":None, "tl_gantt_traces":None, "tl_n_rows":0,
+        "tl_id_map":{}, "tl_filters_hash":None, "tl_dates":None,
         "st_show":False, "st_data":None,"st_filters_hash":None, "st_charts":None, "st_charts_hash":None,"st_map_used":"All Maps", "st_dates_used":None, "st_dates_label":"All dates", "st_insight":None,
     }.items():
         if k not in st.session_state:
@@ -256,6 +258,11 @@ def load_data():
     df["date"] = pd.to_datetime(df["date"])
     df["date_str"] = df["date"].dt.strftime("%b %d")
     df["is_bot"] = df["is_bot"].astype(bool)
+    # ts is stored as seconds (float) in parquet — keep as numeric
+    # DO NOT convert to datetime: the parquet schema tags it as datetime64[ms]
+    # which would make pandas interpret 480.0 seconds as 480 milliseconds
+    # We treat ts as raw seconds elapsed within the match
+    df["ts"] = pd.to_numeric(df["ts"], errors="coerce")
     df = df.sort_values("ts").reset_index(drop=True)
     return df
 
@@ -292,8 +299,9 @@ def get_match_summaries(_df, map_id, dates_tuple=None):
     for mid, grp in sub.groupby("match_id_clean"):
         n_humans = grp[~grp["is_bot"]]["user_id_from_file"].nunique()
         n_bots   = grp[grp["is_bot"]]["user_id_from_file"].nunique()
-        date     = grp["date_str"].iloc[0]
-        summaries[mid] = f"{mid[:8]}… | {date} | {n_humans}P {n_bots}B"
+        # Show all dates this match spans — handles cross-midnight matches
+        dates    = " & ".join(sorted(grp["date_str"].unique()))
+        summaries[mid] = f"{mid[:8]}… | {dates} | {n_humans}P {n_bots}B"
     return summaries
 
 # ── Query ─────────────────────────────────────────────────────────────────────
@@ -357,7 +365,13 @@ def _map_layout(fig):
         margin=dict(l=0,r=0,t=0,b=0), height=680, dragmode="pan",
     )
 
-def build_map_fig(df_in, map_id, show_paths=True, show_events=True, active_events=None):
+def build_map_fig(df_in, map_id, show_paths=True, show_events=True,
+                  active_events=None, path_width=1, path_opacity_human=0.3,
+                  path_opacity_bot=0.2):
+    """
+    path_width: line width for player paths. Default 1 (Map View). Use 2+ for Timeline.
+    path_opacity_human/bot: opacity for path lines. Lower = more transparent.
+    """
     fig = go.Figure()
 
     b64 = get_minimap_b64(map_id)
@@ -376,13 +390,14 @@ def build_map_fig(df_in, map_id, show_paths=True, show_events=True, active_event
     if show_paths:
         pos = df_in[df_in["event"].isin(MOVE_EVENTS)]
         if not pos.empty:
-            for is_bot_flag, label, color in [
-                (False, "Human Paths", "rgba(88,166,255,0.3)"),
-                (True,  "Bot Paths",   "rgba(139,148,158,0.2)"),
+            for is_bot_flag, label, base_color, opacity in [
+                (False, "Human Paths", "88,166,255", path_opacity_human),
+                (True,  "Bot Paths",   "139,148,158", path_opacity_bot),
             ]:
                 subset = pos[pos["is_bot"] == is_bot_flag]
                 if subset.empty:
                     continue
+                color = f"rgba({base_color},{opacity})"
                 xs, ys = [], []
                 for _, grp in subset.groupby(
                     ["user_id_from_file","match_id_clean"], sort=False
@@ -391,7 +406,7 @@ def build_map_fig(df_in, map_id, show_paths=True, show_events=True, active_event
                     ys.extend(grp["pixel_y"].tolist() + [None])
                 fig.add_trace(go.Scattergl(
                     x=xs, y=ys, mode="lines", name=label,
-                    line=dict(color=color, width=1),
+                    line=dict(color=color, width=path_width),
                     hoverinfo="skip", showlegend=True,
                 ))
 
@@ -1222,23 +1237,130 @@ def render_heatmap(df):
 # TAB 3 — TIMELINE
 # ─────────────────────────────────────────────────────────────────────────────
 def render_timeline(df):
-    st.markdown("#### ⏱️ Timeline Filters")
-    c1,c2,c3 = st.columns([1,2,1])
-    with c1:
-        tl_map = st.selectbox("Map (required)", MAPS, index=None,
-                              placeholder="Select a map…", key="tl_map_sel")
-    with c2:
-        matches = get_map_matches(df, tl_map) if tl_map else []
-        tl_match = st.selectbox(
-            "Match (required)", matches, index=None,
-            placeholder="Choose a match…" if matches else "Select map first",
-            format_func=match_label,
-            key="tl_match_sel", disabled=not tl_map,
-        )
-    with c3:
-        tl_players = st.radio("Players", ["All","Humans","Bots"], key="tl_players_sel")
+    dates_list = get_dates_list(df)
 
-    show_clicked = st.button("▶  Load Match", key="tl_show_btn", type="primary")
+    # FIX 11: styled header consistent with other tabs
+    st.markdown("""
+    <div style="margin-bottom:14px;">
+      <span style="font-family:'Rajdhani',sans-serif;font-size:1.15rem;font-weight:700;
+                   color:#e6edf3;letter-spacing:0.06em;">⏱️ Timeline</span>
+      <span style="font-family:'Share Tech Mono',monospace;font-size:0.68rem;
+                   color:#444d56;margin-left:10px;">Select a match to replay it second by second</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # FIX 1: Map — radio buttons consistent with other tabs
+    st.markdown('<div class="filter-group">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-group-label">Map (required)</div>', unsafe_allow_html=True)
+    tl_map = st.radio(
+        "Map", MAPS, index=None, horizontal=True,
+        key="tl_map_radio", label_visibility="collapsed",
+    )
+    if not tl_map:
+        st.caption("← Select a map to begin")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── GROUP 2: Date checkboxes — narrows match dropdown ────────────────────
+    st.markdown('<div class="filter-group">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-group-label">Date(s) — filter matches by day</div>',
+                unsafe_allow_html=True)
+
+    st.session_state.setdefault("tl_date_all", True)
+    for _d in dates_list:
+        st.session_state.setdefault(f"tl_date_{_d}", True)
+
+    def _on_tl_date_all_change():
+        new_val = st.session_state["tl_date_all"]
+        for _d in dates_list:
+            st.session_state[f"tl_date_{_d}"] = new_val
+
+    def _on_tl_date_individual_change():
+        all_on = all(st.session_state.get(f"tl_date_{_d}", True) for _d in dates_list)
+        st.session_state["tl_date_all"] = all_on
+
+    tl_da_cols = st.columns([1] + [1]*len(dates_list))
+    with tl_da_cols[0]:
+        tl_all_dates = st.checkbox(
+            "All", key="tl_date_all",
+            on_change=_on_tl_date_all_change,
+        )
+    tl_date_checks = {}
+    for i, d in enumerate(dates_list):
+        with tl_da_cols[i+1]:
+            tl_date_checks[d] = st.checkbox(
+                d, key=f"tl_date_{d}",
+                disabled=tl_all_dates,
+                on_change=_on_tl_date_individual_change,
+            )
+
+    if tl_all_dates:
+        tl_dates = None
+    else:
+        sel = [d for d,v in tl_date_checks.items() if v]
+        tl_dates = sel if sel else None
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── GROUP 3: Match dropdown — filtered by map + dates ────────────────────
+    st.markdown('<div class="filter-group">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-group-label">Match (required)</div>', unsafe_allow_html=True)
+    if not tl_map:
+        st.caption("Select a map first to see available matches.")
+        tl_match     = None
+        tl_match_sel = None
+    else:
+        tl_dates_tuple = tuple(tl_dates) if tl_dates else None
+        tl_summaries   = get_match_summaries(df, tl_map, tl_dates_tuple)
+        tl_match_ids   = list(tl_summaries.keys())
+        n_matches      = len(tl_match_ids)
+        tl_saved       = st.session_state.get("tl_match_sel")
+        tl_safe_idx    = tl_match_ids.index(tl_saved) if tl_saved in tl_match_ids else None
+        tl_match_sel   = st.selectbox(
+            "Match", tl_match_ids, index=tl_safe_idx,
+            placeholder=f"Choose from {n_matches} matches…" if tl_match_ids else "No matches for these filters",
+            format_func=lambda x: tl_summaries.get(x, match_label(x)),
+            key="tl_match_sel",
+            help="Each entry shows: Match ID | Date | Players (P) | Bots (B)",
+            label_visibility="collapsed",
+        )
+        tl_match = tl_match_sel
+        # Show how many matches are visible after date filter
+        if tl_dates:
+            st.caption(f"Showing {n_matches} matches for {', '.join(tl_dates)}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # FIX 17: "All Players" label instead of "All"
+    st.markdown('<div class="filter-group">', unsafe_allow_html=True)
+    st.markdown('<div class="filter-group-label">Player Type</div>', unsafe_allow_html=True)
+    tl_players = st.radio(
+        "Players", ["All Players","Humans Only","Bots Only"],
+        horizontal=True, key="tl_players_sel", label_visibility="collapsed",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # FIX 10: Stale detection
+    tl_hash = str((tl_map, tuple(tl_dates) if tl_dates else (), tl_match_sel, tl_players))
+    tl_is_stale = (
+        st.session_state["tl_show"]
+        and st.session_state.get("tl_filters_hash") is not None
+        and st.session_state.get("tl_filters_hash") != tl_hash
+    )
+    if tl_is_stale:
+        st.markdown(
+            '<div class="stale-banner">'
+            '⚠️  Filters changed — click <b>Load Match</b> to refresh.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # FIX 16: sticky Load Match button layout
+    sb1, _, sb2 = st.columns([2, 6, 1])
+    with sb1:
+        show_clicked = st.button("▶  Load Match", key="tl_show_btn",
+                                 type="primary", use_container_width=True)
+    with sb2:
+        st.write("")
+
     if show_clicked:
         if not tl_map:
             st.error("⬆️  Please select a Map.")
@@ -1246,46 +1368,123 @@ def render_timeline(df):
             st.error("⬆️  Please select a Match.")
         else:
             with st.spinner("Loading match data…"):
-                mdf = run_match_query(df, tl_match).copy()
-                if tl_players == "Humans":
-                    mdf = mdf[~mdf["is_bot"]]
-                elif tl_players == "Bots":
-                    mdf = mdf[mdf["is_bot"]]
+                # FIX 3: run_match_query already returns .copy() — no double copy
+                mdf = run_match_query(df, tl_match)
+                if tl_players == "Humans Only":
+                    mdf = mdf[~mdf["is_bot"]].copy()
+                elif tl_players == "Bots Only":
+                    mdf = mdf[mdf["is_bot"]].copy()
                 if not mdf.empty:
-                    mdf["ts"]        = pd.to_datetime(mdf["ts"])
-                    t_min            = mdf["ts"].min()
-                    t_max            = mdf["ts"].max()
-                    mdf["elapsed_s"] = (mdf["ts"] - t_min).dt.total_seconds()
-                    total_s          = max(float((t_max-t_min).total_seconds()), 1.0)
+                    # Per-player normalization — each player's ts starts at 0
+                    # This handles late-joiners whose ts=0 doesn't align with match start
+                    # elapsed_s = seconds into the match for each event per player
+                    mdf["elapsed_s"] = (
+                        mdf.groupby("user_id_from_file")["ts"]
+                        .transform(lambda x: x.astype(float) - float(x.min()))
+                    )
+                    total_s = max(float(mdf["elapsed_s"].max()), 1.0)
+                    # FIX 7 & 8: Pre-build Gantt and histogram once at load time
+                    # Player labels — readable "P1/B1" format
+                    combat = mdf[~mdf["event"].isin(MOVE_EVENTS)].copy()
+                    if not combat.empty:
+                        # Sort unique player IDs before assigning numbers so
+                        # P1/P2/B1/B2 ordering matches the Gantt chart Y-axis sort
+                        human_uids = sorted(mdf[~mdf["is_bot"]]["user_id_from_file"].unique())
+                        bot_uids   = sorted(mdf[mdf["is_bot"]]["user_id_from_file"].unique())
+                        human_ids  = {uid: f"👤 P{i+1}" for i,uid in enumerate(human_uids)}
+                        bot_ids    = {uid: f"🤖 B{i+1}" for i,uid in enumerate(bot_uids)}
+                        id_map     = {**human_ids, **bot_ids}
+                        combat["player_label"] = combat["user_id_from_file"].map(id_map)
+                        # Also store id_map in session for lookup table
+                        # Build Gantt traces (without vline — added dynamically)
+                        gantt_traces = []
+                        for evt, grp in combat.groupby("event"):
+                            gantt_traces.append(dict(
+                                x=grp["elapsed_s"].tolist(),
+                                y=grp["player_label"].tolist(),
+                                name=evt,
+                                color=EVENT_COLORS.get(evt,"#fff"),
+                                symbol=EVENT_SYMBOLS.get(evt,"circle"),
+                            ))
+                        n_rows = combat["player_label"].nunique()
+                    else:
+                        gantt_traces = []
+                        n_rows       = 0
+                        id_map       = {}
                 else:
-                    total_s = 1.0
-            st.session_state["tl_data"]       = mdf
-            st.session_state["tl_map_used"]   = tl_map
-            st.session_state["tl_match_used"] = tl_match
-            st.session_state["tl_total_s"]    = total_s
-            st.session_state["tl_show"]       = True
+                    total_s      = 1.0
+                    combat       = pd.DataFrame()
+                    gantt_traces = []
+                    n_rows       = 0
+                    id_map       = {}
+
+            st.session_state["tl_data"]         = mdf
+            st.session_state["tl_combat"]        = combat
+            st.session_state["tl_gantt_traces"]  = gantt_traces
+            st.session_state["tl_n_rows"]        = n_rows
+            st.session_state["tl_id_map"]        = id_map
+            st.session_state["tl_map_used"]      = tl_map
+            st.session_state["tl_match_used"]    = tl_match
+            st.session_state["tl_total_s"]       = total_s
+            st.session_state["tl_show"]          = True
+            st.session_state["tl_filters_hash"]  = tl_hash
+            st.rerun()  # FIX 4: commit state before rendering
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
+    # FIX 12: rich empty state
     if not st.session_state["tl_show"]:
         st.markdown("""
         <div class="empty-state">
           <div style="font-size:3rem;margin-bottom:12px;">⏱️</div>
           <div class="title">No match loaded yet</div>
-          <div class="hint">Select a map and a specific match, then click Load Match</div>
-          <div class="hint">You can then scrub through the match second by second</div>
+          <div class="hint">1. Select a <b>Map</b> above</div>
+          <div class="hint">2. Pick a <b>Match</b> — each entry shows date and player count</div>
+          <div class="hint">3. Choose a <b>Player Type</b> filter</div>
+          <div class="hint">4. Click <b>▶ Load Match</b> to start the replay</div>
+          <div style="margin-top:20px;font-size:0.75rem;color:#30363d;">
+            Tip: Use the scrub slider to move through the match second by second
+          </div>
         </div>
         """, unsafe_allow_html=True)
         return
 
-    mdf     = st.session_state["tl_data"]
-    map_u   = st.session_state["tl_map_used"]
-    match_u = st.session_state["tl_match_used"]
-    total_s = st.session_state["tl_total_s"]
+    mdf          = st.session_state["tl_data"]
+    map_u        = st.session_state["tl_map_used"]
+    match_u      = st.session_state["tl_match_used"]
+    total_s      = st.session_state["tl_total_s"]
+    combat       = st.session_state["tl_combat"]
+    gantt_traces = st.session_state["tl_gantt_traces"]
+    n_rows       = st.session_state["tl_n_rows"]
+    id_map       = st.session_state["tl_id_map"]
 
     if mdf is None or mdf.empty:
         st.warning("No data for this match / player filter.")
         return
+
+    # FIX 13: Active filter summary bar
+    players_label = tl_players
+    st.markdown(
+        f'<div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;'
+        f'padding:10px 16px;margin-bottom:14px;font-family:Share Tech Mono,monospace;'
+        f'font-size:0.75rem;color:#8b949e;">'
+        f'<span style="color:#e6edf3;font-weight:600;">Currently showing:</span>'
+        f' &nbsp; 🗺️ <span style="color:#58a6ff">{map_u}</span>'
+        f' &nbsp;·&nbsp; 🎮 <span style="color:#58a6ff">{match_label(match_u)}</span>'
+        f' &nbsp;·&nbsp; 👥 <span style="color:#58a6ff">{players_label}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Stale hint near chart
+    if tl_is_stale:
+        st.markdown(
+            '<div class="stale-map-hint">'
+            '⚠️  This data reflects previous filters. '
+            'Scroll up and click Load Match to update.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
     n_h = int(mdf[~mdf["is_bot"]]["user_id_from_file"].nunique())
     n_b = int(mdf[mdf["is_bot"]]["user_id_from_file"].nunique())
@@ -1299,90 +1498,202 @@ def render_timeline(df):
         unsafe_allow_html=True,
     )
 
-    playback_s = st.slider(
-        "Scrub through match (seconds)",
-        min_value=0.0, max_value=total_s, value=0.0,
-        step=max(1.0, round(total_s/120,1)),
-        key=f"tl_slider_{match_u}",
-        help="Drag to replay the match. The map below updates to show events up to this point.",
-    )
+    # Initialise slider position in session state if not already set
+    slider_key = f"tl_slider_{match_u}"
+    st.session_state.setdefault(slider_key, 0.0)
 
-    up_to = mdf[mdf["elapsed_s"] <= playback_s]
+    # ── Jump buttons — update slider position via on_click callbacks ──────────
+    # Each button adds N seconds to current position, clamped to [0, total_s]
+    JUMP_STEPS = [1, 5, 10, 30, 60]
+
+    def _make_jump(seconds, key, max_s):
+        """Return on_click callback that advances slider by `seconds`."""
+        def _jump():
+            cur = float(st.session_state.get(key, 0.0))
+            st.session_state[key] = min(cur + seconds, max_s)
+        return _jump
+
+    def _make_back(seconds, key):
+        """Return on_click callback that rewinds slider by `seconds`."""
+        def _back():
+            cur = float(st.session_state.get(key, 0.0))
+            st.session_state[key] = max(cur - seconds, 0.0)
+        return _back
+
+    def _reset(key):
+        st.session_state[key] = 0.0
+
+    # Read current slider position BEFORE rendering buttons
+    # so disabled state is correctly computed on every rerun
+    cur_pos   = float(st.session_state.get(slider_key, 0.0))
+    at_start  = cur_pos <= 0.0
+    at_end    = cur_pos >= total_s
+
     st.markdown(
-        f'<div style="font-size:0.72rem;color:#444d56;margin-bottom:4px;'
-        f'font-family:Share Tech Mono,monospace;">'
-        f'🖱 Scroll to zoom · Click and drag to pan</div>',
+        '<div style="font-size:0.72rem;color:#444d56;margin-bottom:4px;'
+        'font-family:Share Tech Mono,monospace;">'
+        '⏱ Jump controls — click to advance or rewind the timeline'
+        '</div>',
         unsafe_allow_html=True,
     )
+    btn_cols = st.columns([1, 1, 1, 0.3, 1, 1, 1, 1, 1])
+    with btn_cols[0]:
+        # Reset disabled when already at start
+        st.button("⏮ Reset", key="tl_reset_btn",
+                  on_click=lambda: _reset(slider_key),
+                  use_container_width=True,
+                  disabled=at_start)
+    with btn_cols[1]:
+        st.button("−30s", key="tl_back30",
+                  on_click=_make_back(30, slider_key),
+                  use_container_width=True,
+                  disabled=at_start)
+    with btn_cols[2]:
+        st.button("−10s", key="tl_back10",
+                  on_click=_make_back(10, slider_key),
+                  use_container_width=True,
+                  disabled=at_start)
+    # spacer col [3]
+    with btn_cols[4]:
+        st.button("+1s",  key="tl_fwd1",
+                  on_click=_make_jump(1,  slider_key, total_s),
+                  use_container_width=True, type="primary",
+                  disabled=at_end)
+    with btn_cols[5]:
+        st.button("+5s",  key="tl_fwd5",
+                  on_click=_make_jump(5,  slider_key, total_s),
+                  use_container_width=True, type="primary",
+                  disabled=at_end)
+    with btn_cols[6]:
+        st.button("+10s", key="tl_fwd10",
+                  on_click=_make_jump(10, slider_key, total_s),
+                  use_container_width=True, type="primary",
+                  disabled=at_end)
+    with btn_cols[7]:
+        st.button("+30s", key="tl_fwd30",
+                  on_click=_make_jump(30, slider_key, total_s),
+                  use_container_width=True, type="primary",
+                  disabled=at_end)
+    with btn_cols[8]:
+        st.button("+60s", key="tl_fwd60",
+                  on_click=_make_jump(60, slider_key, total_s),
+                  use_container_width=True, type="primary",
+                  disabled=at_end)
+
+    step_s = max(1.0, round(total_s / 120, 1))
+    playback_s = st.slider(
+        "Scrub through match (seconds)",
+        min_value=0.0, max_value=total_s,
+        step=step_s,
+        key=slider_key,
+        help="Drag the slider or use the jump buttons above.",
+    )
+
+    # FIX 5: Map figure — only rebuild when slider moves (use st.empty placeholder)
+    st.markdown(
+        '<div style="font-size:0.72rem;color:#444d56;margin-bottom:4px;'
+        'font-family:Share Tech Mono,monospace;">'
+        '🖱 Scroll to zoom · Click and drag to pan · Double-click to reset view'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    up_to = mdf[mdf["elapsed_s"] <= playback_s]
+    # Map must rebuild on every slider move (data slice changes) but we keep it fast
+    # by using the pre-sorted mdf and a simple boolean filter — no heavy groupby
     st.plotly_chart(
-        build_map_fig(up_to, map_u, show_paths=True, show_events=True),
+        build_map_fig(up_to, map_u, show_paths=True, show_events=True,
+                      path_width=2.5,
+                      path_opacity_human=0.85,
+                      path_opacity_bot=0.65),
         use_container_width=True,
+        key=f"tl_map_{match_u}_{playback_s}",
         config={"scrollZoom":True,"displayModeBar":True,
                 "modeBarButtonsToRemove":["select2d","lasso2d"]},
     )
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    combat = mdf[~mdf["event"].isin(MOVE_EVENTS)].copy()
-    st.markdown("**👥 Player Activity**")
-    if combat.empty:
+
+    # FIX 7: Gantt — rebuild traces from cached data, only update vline
+    st.markdown(
+        '<div style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
+        'color:#e6edf3;margin:8px 0 6px;">👥 Player Activity</div>',
+        unsafe_allow_html=True,
+    )
+    if not gantt_traces:
         st.info("No combat or loot events in this match.")
     else:
-        combat["player_label"] = (
-            combat["is_bot"].map({True:"🤖 ",False:"👤 "})
-            + combat["user_id_from_file"].str[:8]
-        )
         gantt = go.Figure()
-        for evt, grp in combat.groupby("event"):
+        for t in gantt_traces:
             gantt.add_trace(go.Scatter(
-                x=grp["elapsed_s"], y=grp["player_label"],
-                mode="markers", name=evt,
-                marker=dict(color=EVENT_COLORS.get(evt,"#fff"),
-                            symbol=EVENT_SYMBOLS.get(evt,"circle"),
-                            size=10,line=dict(color="#0a0c10",width=1)),
-                hovertemplate=f"<b>{evt}</b><br>T+%{{x:.1f}}s<br>%{{y}}<extra></extra>",
+                x=t["x"], y=t["y"],
+                mode="markers", name=t["name"],
+                marker=dict(color=t["color"], symbol=t["symbol"],
+                            size=10, line=dict(color="#0a0c10",width=1)),
+                hovertemplate=f"<b>{t['name']}</b><br>T+%{{x:.1f}}s<br>%{{y}}<extra></extra>",
             ))
-        gantt.add_vline(x=playback_s, line_width=2, line_dash="dash",
-                        line_color="#ff4444",
-                        annotation_text=f"▶ {playback_s:.0f}s",
-                        annotation_font_color="#ff4444",annotation_font_size=11,
-                        annotation_position="top right")
-        n_rows = combat["player_label"].nunique()
+        gantt.add_vline(
+            x=playback_s, line_width=2, line_dash="dash", line_color="#ff4444",
+            annotation_text=f"▶ {playback_s:.0f}s",
+            annotation_font_color="#ff4444", annotation_font_size=11,
+            annotation_position="top right",
+        )
         gantt.update_layout(
-            plot_bgcolor="#0d1117",paper_bgcolor="#0d1117",
-            font=dict(color="#c9d1d9",size=11),
-            legend=dict(bgcolor="#161b22",bordercolor="#21262d",borderwidth=1,
-                        orientation="h",yanchor="bottom",y=1.02,x=0),
-            xaxis=dict(title="Elapsed (seconds)",gridcolor="#21262d",
-                       range=[0,total_s],zeroline=False,tickfont=dict(color="#8b949e")),
-            yaxis=dict(gridcolor="#21262d",autorange="reversed",
-                       zeroline=False,tickfont=dict(color="#c9d1d9",size=10)),
+            plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+            font=dict(color="#c9d1d9", size=11),
+            legend=dict(bgcolor="#161b22", bordercolor="#21262d", borderwidth=1,
+                        orientation="h", yanchor="bottom", y=1.02, x=0),
+            xaxis=dict(title="Elapsed (seconds)", gridcolor="#21262d",
+                       range=[0,total_s], zeroline=False,
+                       tickfont=dict(color="#8b949e")),
+            yaxis=dict(gridcolor="#21262d", autorange="reversed",
+                       zeroline=False, tickfont=dict(color="#c9d1d9", size=10)),
             height=max(320, n_rows*30+100),
             margin=dict(l=10,r=20,t=50,b=50),
         )
-        st.plotly_chart(gantt, use_container_width=True)
+        st.plotly_chart(gantt, use_container_width=True,
+                        key=f"tl_gantt_{match_u}_{playback_s}")
+
+        # FIX 8: Player label lookup table
+        if id_map:
+            with st.expander("🔎 Player Label Lookup — who is P1, P2, B1…"):
+                rows = [{"Label": lbl, "Short ID": uid[:8]+"…"+uid[-4:],
+                         "Full User ID": uid}
+                        for uid, lbl in id_map.items()]
+                st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                             hide_index=True)
+                st.caption("Copy a Full User ID to search in the Raw Data Explorer in Stats tab.")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.markdown("**📊 Event Density**")
+
+    # FIX 7: Histogram — rebuild from cached combat, only vline changes
+    st.markdown(
+        '<div style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
+        'color:#e6edf3;margin:8px 0 6px;">📊 Event Density</div>',
+        unsafe_allow_html=True,
+    )
     if not combat.empty:
         hfig = px.histogram(
             combat, x="elapsed_s", color="event",
-            nbins=max(20,int(total_s//15)),
+            nbins=max(20, int(total_s//15)),
             color_discrete_map=EVENT_COLORS, barmode="stack", height=250,
-            labels={"elapsed_s":"Elapsed (seconds)","count":"Events"},
+            labels={"elapsed_s":"Elapsed (seconds)", "count":"Events"},
         )
-        hfig.add_vline(x=playback_s,line_width=2,line_dash="dash",
-                       line_color="#ff4444",
-                       annotation_text=f"T={playback_s:.0f}s",
-                       annotation_font_color="#ff4444",annotation_font_size=10)
+        hfig.add_vline(
+            x=playback_s, line_width=2, line_dash="dash", line_color="#ff4444",
+            annotation_text=f"T={playback_s:.0f}s",
+            annotation_font_color="#ff4444", annotation_font_size=10,
+        )
         hfig.update_layout(
-            plot_bgcolor="#0d1117",paper_bgcolor="#0d1117",font=dict(color="#c9d1d9"),
-            legend=dict(bgcolor="#161b22",bordercolor="#21262d",borderwidth=1,
-                        orientation="h",yanchor="bottom",y=1.02),
-            xaxis=dict(gridcolor="#21262d",range=[0,total_s],zeroline=False),
-            yaxis=dict(gridcolor="#21262d",title="Event count",zeroline=False),
+            plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+            font=dict(color="#c9d1d9"),
+            legend=dict(bgcolor="#161b22", bordercolor="#21262d", borderwidth=1,
+                        orientation="h", yanchor="bottom", y=1.02),
+            xaxis=dict(gridcolor="#21262d", range=[0,total_s], zeroline=False),
+            yaxis=dict(gridcolor="#21262d", title="Event count", zeroline=False),
             margin=dict(l=10,r=10,t=40,b=40),
         )
-        st.plotly_chart(hfig, use_container_width=True)
+        st.plotly_chart(hfig, use_container_width=True,
+                        key=f"tl_hist_{match_u}_{playback_s}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 — STATS
