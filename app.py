@@ -754,6 +754,9 @@ def render_map_view(df):
         if not mv_humans and not mv_bots:
             st.error("⬆️  Please check at least one of Show Humans or Show Bots.")
             return
+        if not mv_paths and not mv_markers:
+            st.error("⬆️  Please select at least one Display Option — Show Player Paths or Show Event Markers.")
+            return
 
         with st.spinner("⏳ Querying data…"):
             result = run_map_query(
