@@ -242,7 +242,9 @@ def init_state():
         "tl_show":False, "tl_data":None,
         "tl_map_used":None, "tl_match_used":None, "tl_total_s":1.0,
         "tl_combat":None, "tl_gantt_traces":None, "tl_n_rows":0,
-        "tl_id_map":{}, "tl_filters_hash":None, "tl_dates":None,
+        "tl_id_map":{}, "tl_gantt_base":None, "tl_hfig_base":None,
+        "tl_filters_hash":None, "tl_dates":None,
+        "tl_players_used":None, "tl_n_h":0, "tl_n_b":0,
         "st_show":False, "st_data":None,"st_filters_hash":None, "st_charts":None, "st_charts_hash":None,"st_map_used":"All Maps", "st_dates_used":None, "st_dates_label":"All dates", "st_insight":None,
     }.items():
         if k not in st.session_state:
@@ -769,6 +771,7 @@ def render_map_view(df):
         st.session_state["mv_event_filter"] = mv_event_filter
         st.session_state["mv_show"]         = True
         st.session_state["mv_filters_hash"] = current_hash
+        st.rerun()
 
     # FIX 16: soft divider instead of hard hr
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -1383,21 +1386,17 @@ def render_timeline(df):
                         .transform(lambda x: x.astype(float) - float(x.min()))
                     )
                     total_s = max(float(mdf["elapsed_s"].max()), 1.0)
-                    # FIX 7 & 8: Pre-build Gantt and histogram once at load time
-                    # Player labels — readable "P1/B1" format
                     combat = mdf[~mdf["event"].isin(MOVE_EVENTS)].copy()
                     if not combat.empty:
-                        # Sort unique player IDs before assigning numbers so
-                        # P1/P2/B1/B2 ordering matches the Gantt chart Y-axis sort
                         human_uids = sorted(mdf[~mdf["is_bot"]]["user_id_from_file"].unique())
                         bot_uids   = sorted(mdf[mdf["is_bot"]]["user_id_from_file"].unique())
                         human_ids  = {uid: f"👤 P{i+1}" for i,uid in enumerate(human_uids)}
                         bot_ids    = {uid: f"🤖 B{i+1}" for i,uid in enumerate(bot_uids)}
                         id_map     = {**human_ids, **bot_ids}
                         combat["player_label"] = combat["user_id_from_file"].map(id_map)
-                        # Also store id_map in session for lookup table
-                        # Build Gantt traces (without vline — added dynamically)
+                        # Pre-build Gantt base figure — only vline added per render
                         gantt_traces = []
+                        gantt_base   = go.Figure()
                         for evt, grp in combat.groupby("event"):
                             gantt_traces.append(dict(
                                 x=grp["elapsed_s"].tolist(),
@@ -1406,29 +1405,86 @@ def render_timeline(df):
                                 color=EVENT_COLORS.get(evt,"#fff"),
                                 symbol=EVENT_SYMBOLS.get(evt,"circle"),
                             ))
+                            gantt_base.add_trace(go.Scatter(
+                                x=grp["elapsed_s"].tolist(),
+                                y=grp["player_label"].tolist(),
+                                mode="markers", name=evt,
+                                marker=dict(color=EVENT_COLORS.get(evt,"#fff"),
+                                            symbol=EVENT_SYMBOLS.get(evt,"circle"),
+                                            size=10,
+                                            line=dict(color="#0a0c10",width=1)),
+                                hovertemplate=f"<b>{evt}</b><br>T+%{{x:.1f}}s<br>%{{y}}<extra></extra>",
+                            ))
                         n_rows = combat["player_label"].nunique()
+                        gantt_base.update_layout(
+                            plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+                            font=dict(color="#c9d1d9", size=11),
+                            legend=dict(bgcolor="#161b22", bordercolor="#21262d",
+                                        borderwidth=1, orientation="h",
+                                        yanchor="bottom", y=1.02, x=0),
+                            xaxis=dict(title="Elapsed (seconds)", gridcolor="#21262d",
+                                       range=[0, total_s], zeroline=False,
+                                       tickfont=dict(color="#8b949e")),
+                            yaxis=dict(gridcolor="#21262d", autorange="reversed",
+                                       zeroline=False,
+                                       tickfont=dict(color="#c9d1d9", size=10)),
+                            height=max(320, n_rows*30+100),
+                            margin=dict(l=10, r=20, t=50, b=50),
+                        )
+                        # Pre-build histogram base — bins fixed, only vline changes
+                        hfig_base = px.histogram(
+                            combat, x="elapsed_s", color="event",
+                            nbins=max(20, int(total_s//15)),
+                            color_discrete_map=EVENT_COLORS,
+                            barmode="stack", height=250,
+                            labels={"elapsed_s":"Elapsed (seconds)", "count":"Events"},
+                        )
+                        hfig_base.update_layout(
+                            plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+                            font=dict(color="#c9d1d9"),
+                            legend=dict(bgcolor="#161b22", bordercolor="#21262d",
+                                        borderwidth=1, orientation="h",
+                                        yanchor="bottom", y=1.02),
+                            xaxis=dict(gridcolor="#21262d", range=[0,total_s],
+                                       zeroline=False),
+                            yaxis=dict(gridcolor="#21262d", title="Event count",
+                                       zeroline=False),
+                            margin=dict(l=10, r=10, t=40, b=40),
+                        )
                     else:
                         gantt_traces = []
+                        gantt_base   = None
+                        hfig_base    = None
                         n_rows       = 0
                         id_map       = {}
                 else:
                     total_s      = 1.0
                     combat       = pd.DataFrame()
                     gantt_traces = []
+                    gantt_base   = None
+                    hfig_base    = None
                     n_rows       = 0
                     id_map       = {}
+                n_h = int(mdf[~mdf["is_bot"]]["user_id_from_file"].nunique()) if not mdf.empty else 0
+                n_b = int(mdf[mdf["is_bot"]]["user_id_from_file"].nunique()) if not mdf.empty else 0
 
+            st.session_state[f"tl_slider_{tl_match}"] = 0.0
             st.session_state["tl_data"]         = mdf
             st.session_state["tl_combat"]        = combat
             st.session_state["tl_gantt_traces"]  = gantt_traces
+            st.session_state["tl_gantt_base"]    = gantt_base
+            st.session_state["tl_hfig_base"]     = hfig_base
             st.session_state["tl_n_rows"]        = n_rows
             st.session_state["tl_id_map"]        = id_map
             st.session_state["tl_map_used"]      = tl_map
             st.session_state["tl_match_used"]    = tl_match
             st.session_state["tl_total_s"]       = total_s
+            st.session_state["tl_players_used"]  = tl_players
+            st.session_state["tl_n_h"]           = n_h
+            st.session_state["tl_n_b"]           = n_b
             st.session_state["tl_show"]          = True
             st.session_state["tl_filters_hash"]  = tl_hash
-            st.rerun()  # FIX 4: commit state before rendering
+            st.rerun()
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -1439,11 +1495,12 @@ def render_timeline(df):
           <div style="font-size:3rem;margin-bottom:12px;">⏱️</div>
           <div class="title">No match loaded yet</div>
           <div class="hint">1. Select a <b>Map</b> above</div>
-          <div class="hint">2. Pick a <b>Match</b> — each entry shows date and player count</div>
-          <div class="hint">3. Choose a <b>Player Type</b> filter</div>
-          <div class="hint">4. Click <b>▶ Load Match</b> to start the replay</div>
+          <div class="hint">2. Optionally filter by <b>Date</b> to narrow the match list</div>
+          <div class="hint">3. Pick a <b>Match</b> — each entry shows date and player count</div>
+          <div class="hint">4. Choose a <b>Player Type</b> filter</div>
+          <div class="hint">5. Click <b>▶ Load Match</b> to start the replay</div>
           <div style="margin-top:20px;font-size:0.75rem;color:#30363d;">
-            Tip: Use the scrub slider to move through the match second by second
+            Tip: Use the scrub slider or jump buttons to move through the match
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1455,6 +1512,8 @@ def render_timeline(df):
     total_s      = st.session_state["tl_total_s"]
     combat       = st.session_state["tl_combat"]
     gantt_traces = st.session_state["tl_gantt_traces"]
+    gantt_base   = st.session_state.get("tl_gantt_base")
+    hfig_base    = st.session_state.get("tl_hfig_base")
     n_rows       = st.session_state["tl_n_rows"]
     id_map       = st.session_state["tl_id_map"]
 
@@ -1462,8 +1521,8 @@ def render_timeline(df):
         st.warning("No data for this match / player filter.")
         return
 
-    # FIX 13: Active filter summary bar
-    players_label = tl_players
+    # Active filter summary bar — read stored value not current widget
+    players_label = st.session_state.get("tl_players_used", tl_players)
     st.markdown(
         f'<div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;'
         f'padding:10px 16px;margin-bottom:14px;font-family:Share Tech Mono,monospace;'
@@ -1486,26 +1545,24 @@ def render_timeline(df):
             unsafe_allow_html=True,
         )
 
-    n_h = int(mdf[~mdf["is_bot"]]["user_id_from_file"].nunique())
-    n_b = int(mdf[mdf["is_bot"]]["user_id_from_file"].nunique())
-    st.markdown(
-        f'<div class="info-bar">'
-        f'⏱ Duration: <span style="color:#58a6ff">{total_s:.0f}s</span>'
-        f' &nbsp;·&nbsp; 👤 <span style="color:#58a6ff">{n_h}</span> humans'
-        f' &nbsp;·&nbsp; 🤖 <span style="color:#58a6ff">{n_b}</span> bots'
-        f' &nbsp;·&nbsp; 📋 <span style="color:#58a6ff">{len(mdf):,}</span> events'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    n_h = st.session_state.get("tl_n_h", 0)
+    n_b = st.session_state.get("tl_n_b", 0)
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Duration",      f"{total_s:.0f}s",
+               help="Total match duration in seconds.")
+    mc2.metric("Human Players", n_h,
+               help="Unique human players in this match.")
+    mc3.metric("Bots",          n_b,
+               help="Unique bots in this match.")
+    mc4.metric("Events",        f"{len(mdf):,}",
+               help="Total events recorded in this match.")
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
     # Initialise slider position in session state if not already set
     slider_key = f"tl_slider_{match_u}"
     st.session_state.setdefault(slider_key, 0.0)
 
-    # ── Jump buttons — update slider position via on_click callbacks ──────────
-    # Each button adds N seconds to current position, clamped to [0, total_s]
-    JUMP_STEPS = [1, 5, 10, 30, 60]
-
+    # ── Jump buttons ──────────────────────────────────────────────────────────
     def _make_jump(seconds, key, max_s):
         """Return on_click callback that advances slider by `seconds`."""
         def _jump():
@@ -1525,9 +1582,7 @@ def render_timeline(df):
 
     # Read current slider position BEFORE rendering buttons
     # so disabled state is correctly computed on every rerun
-    cur_pos   = float(st.session_state.get(slider_key, 0.0))
-    at_start  = cur_pos <= 0.0
-    at_end    = cur_pos >= total_s
+    cur_pos = float(st.session_state.get(slider_key, 0.0))
 
     st.markdown(
         '<div style="font-size:0.72rem;color:#444d56;margin-bottom:4px;'
@@ -1542,43 +1597,43 @@ def render_timeline(df):
         st.button("⏮ Reset", key="tl_reset_btn",
                   on_click=lambda: _reset(slider_key),
                   use_container_width=True,
-                  disabled=at_start)
+                  disabled=cur_pos <= 0.0)
     with btn_cols[1]:
         st.button("−30s", key="tl_back30",
                   on_click=_make_back(30, slider_key),
                   use_container_width=True,
-                  disabled=at_start)
+                  disabled=cur_pos <= 0.0)
     with btn_cols[2]:
         st.button("−10s", key="tl_back10",
                   on_click=_make_back(10, slider_key),
                   use_container_width=True,
-                  disabled=at_start)
+                  disabled=cur_pos <= 0.0)
     # spacer col [3]
     with btn_cols[4]:
         st.button("+1s",  key="tl_fwd1",
                   on_click=_make_jump(1,  slider_key, total_s),
                   use_container_width=True, type="primary",
-                  disabled=at_end)
+                  disabled=cur_pos >= total_s)
     with btn_cols[5]:
         st.button("+5s",  key="tl_fwd5",
                   on_click=_make_jump(5,  slider_key, total_s),
                   use_container_width=True, type="primary",
-                  disabled=at_end)
+                  disabled=cur_pos >= total_s)
     with btn_cols[6]:
         st.button("+10s", key="tl_fwd10",
                   on_click=_make_jump(10, slider_key, total_s),
                   use_container_width=True, type="primary",
-                  disabled=at_end)
+                  disabled=cur_pos >= total_s)
     with btn_cols[7]:
         st.button("+30s", key="tl_fwd30",
                   on_click=_make_jump(30, slider_key, total_s),
                   use_container_width=True, type="primary",
-                  disabled=at_end)
+                  disabled=cur_pos >= total_s)
     with btn_cols[8]:
         st.button("+60s", key="tl_fwd60",
                   on_click=_make_jump(60, slider_key, total_s),
                   use_container_width=True, type="primary",
-                  disabled=at_end)
+                  disabled=cur_pos >= total_s)
 
     step_s = max(1.0, round(total_s / 120, 1))
     playback_s = st.slider(
@@ -1613,42 +1668,34 @@ def render_timeline(df):
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-    # FIX 7: Gantt — rebuild traces from cached data, only update vline
     st.markdown(
         '<div style="font-family:Rajdhani,sans-serif;font-size:1rem;font-weight:700;'
-        'color:#e6edf3;margin:8px 0 6px;">👥 Player Activity</div>',
+        'color:#e6edf3;margin:8px 0 4px;">👥 Player Activity</div>',
         unsafe_allow_html=True,
     )
-    if not gantt_traces:
+    if gantt_traces:
+        kill_times = [x for t in gantt_traces if t["name"] in ("Kill","BotKill")
+                      for x in t["x"]]
+        if kill_times:
+            st.markdown(
+                f'<div style="font-size:0.78rem;color:#8b949e;margin-bottom:8px;">'
+                f'💡 First kill at <span style="color:#ff4444">T={min(kill_times):.0f}s</span>'
+                f' · Last kill at <span style="color:#ff4444">T={max(kill_times):.0f}s</span>'
+                f' · {len(kill_times)} total kills'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    if not gantt_traces or gantt_base is None:
         st.info("No combat or loot events in this match.")
     else:
-        gantt = go.Figure()
-        for t in gantt_traces:
-            gantt.add_trace(go.Scatter(
-                x=t["x"], y=t["y"],
-                mode="markers", name=t["name"],
-                marker=dict(color=t["color"], symbol=t["symbol"],
-                            size=10, line=dict(color="#0a0c10",width=1)),
-                hovertemplate=f"<b>{t['name']}</b><br>T+%{{x:.1f}}s<br>%{{y}}<extra></extra>",
-            ))
+        import copy
+        # Only add vline to pre-built base — no trace rebuild on slider move
+        gantt = copy.deepcopy(gantt_base)
         gantt.add_vline(
             x=playback_s, line_width=2, line_dash="dash", line_color="#ff4444",
             annotation_text=f"▶ {playback_s:.0f}s",
             annotation_font_color="#ff4444", annotation_font_size=11,
             annotation_position="top right",
-        )
-        gantt.update_layout(
-            plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
-            font=dict(color="#c9d1d9", size=11),
-            legend=dict(bgcolor="#161b22", bordercolor="#21262d", borderwidth=1,
-                        orientation="h", yanchor="bottom", y=1.02, x=0),
-            xaxis=dict(title="Elapsed (seconds)", gridcolor="#21262d",
-                       range=[0,total_s], zeroline=False,
-                       tickfont=dict(color="#8b949e")),
-            yaxis=dict(gridcolor="#21262d", autorange="reversed",
-                       zeroline=False, tickfont=dict(color="#c9d1d9", size=10)),
-            height=max(320, n_rows*30+100),
-            margin=dict(l=10,r=20,t=50,b=50),
         )
         st.plotly_chart(gantt, use_container_width=True,
                         key=f"tl_gantt_{match_u}_{playback_s}")
@@ -1671,26 +1718,13 @@ def render_timeline(df):
         'color:#e6edf3;margin:8px 0 6px;">📊 Event Density</div>',
         unsafe_allow_html=True,
     )
-    if not combat.empty:
-        hfig = px.histogram(
-            combat, x="elapsed_s", color="event",
-            nbins=max(20, int(total_s//15)),
-            color_discrete_map=EVENT_COLORS, barmode="stack", height=250,
-            labels={"elapsed_s":"Elapsed (seconds)", "count":"Events"},
-        )
+    if not combat.empty and hfig_base is not None:
+        # Only add vline — histogram bins fixed, no rebuild needed
+        hfig = copy.deepcopy(hfig_base)
         hfig.add_vline(
             x=playback_s, line_width=2, line_dash="dash", line_color="#ff4444",
             annotation_text=f"T={playback_s:.0f}s",
             annotation_font_color="#ff4444", annotation_font_size=10,
-        )
-        hfig.update_layout(
-            plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
-            font=dict(color="#c9d1d9"),
-            legend=dict(bgcolor="#161b22", bordercolor="#21262d", borderwidth=1,
-                        orientation="h", yanchor="bottom", y=1.02),
-            xaxis=dict(gridcolor="#21262d", range=[0,total_s], zeroline=False),
-            yaxis=dict(gridcolor="#21262d", title="Event count", zeroline=False),
-            margin=dict(l=10,r=10,t=40,b=40),
         )
         st.plotly_chart(hfig, use_container_width=True,
                         key=f"tl_hist_{match_u}_{playback_s}")
