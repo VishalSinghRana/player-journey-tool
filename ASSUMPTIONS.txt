@@ -1,0 +1,268 @@
+LILA BLACK — Technical Assumptions & Decisions Log
+====================================================
+Maintained throughout development. Last updated: end of development session.
+
+------------------------------------------------------------
+DATA & PREPROCESSING
+------------------------------------------------------------
+
+TS COLUMN
+- ts is stored as float seconds (game-elapsed time) in the raw parquet files
+- The parquet schema incorrectly tags ts as datetime64[ms]
+- We override with pd.to_numeric(df["ts"], errors="coerce") at load time
+- DO NOT convert ts to datetime — pandas would interpret 480.0 seconds as 480 milliseconds
+- elapsed_s = ts - ts.min() per player (no datetime arithmetic)
+
+TIMESTAMP NORMALIZATION
+- Timeline uses per-player normalization: elapsed_s = ts - ts.min() per user_id_from_file
+- This handles late-joiners whose ts=0 doesn't align with match start
+- Global t_min subtraction was wrong — each player's parquet file records ts independently
+- total_s = max(elapsed_s) across all players in the match
+
+BOT DETECTION
+- UUID user_id (matches regex [0-9a-f]{8}-...) = human player
+- Numeric user_id = bot
+- is_bot cast to bool at load time in load_data()
+
+MATCH ID CLEANUP
+- Raw match_id has ".nakama-0" suffix stripped → match_id_clean
+- match_id_clean used everywhere in the app
+
+FEBRUARY 14
+- Feb 14 is a partial day (is_partial_day=True)
+- Included in the dataset but flagged
+- Event counts are lower than other days by definition — not a data issue
+- Stats tab annotates Feb 14 bar in Events per Day chart
+
+CROSS-MIDNIGHT MATCH
+- 1 match spans both Feb 10 and Feb 11
+- Appears in both individual date selections — this is correct
+- When both dates selected: 200 + 138 - 1 = 337 matches (not 338) — correct
+- Match label shows "Feb 10 & Feb 11" for this match
+
+COORDINATE TRANSFORM
+- pixel_x = u * 1024  where u = (x - origin_x) / scale
+- pixel_y = (1-v) * 1024 where v = (z - origin_z) / scale
+- Y axis is flipped (game coords vs screen coords)
+- All pixel values in range [0, 1024]
+
+SORTING
+- df sorted by ts once at load_data() — path rendering never re-sorts
+- sort_values("ts") works on numeric ts — confirmed before datetime conversion fix
+
+------------------------------------------------------------
+LOAD_DATA()
+------------------------------------------------------------
+
+- Reads data/all_events.parquet
+- Converts: date → datetime, date_str → "Feb DD" format, is_bot → bool, ts → numeric
+- Sorts by ts
+- Cached with @st.cache_data — runs once per session
+
+------------------------------------------------------------
+MAP VIEW TAB
+------------------------------------------------------------
+
+FIGURE CACHING
+- Map figure cached in st.session_state["mv_fig"] keyed by mv_fig_hash
+- Hash includes: map, dates, match, player type, event filter, show_paths, show_markers
+- Rebuilds only when hash changes
+
+PATH RENDERING
+- Human paths: rgba(88,166,255,0.3), width=1 (low opacity for density visualization)
+- Bot paths: rgba(139,148,158,0.2), width=1
+- Paths batched into 2 Scattergl traces (human + bot) using None separators
+- groupby iterated directly — no list() materialization
+
+QUERY LOGIC
+- run_map_query() returns (combined_df, marker_df, path_df)
+- marker_df = combat+loot events — metrics computed from this only
+- path_df = Position/BotPosition — always respects player type filter
+- Event filter applies only to markers, never to paths
+
+UX PATTERNS
+- Sticky Show Map button: position:fixed; bottom:0
+- padding-bottom:90px on page container so sticky bar never covers content
+- Stale banner shown above buttons AND repeated near map (stale-map-hint class)
+- Active filter summary bar: "Currently showing: Map · Dates · Match · Events"
+- st.rerun() after Show Map click — ensures single click works
+
+------------------------------------------------------------
+HEATMAP TAB
+------------------------------------------------------------
+
+FIGURE CACHING
+- Figure cached by str((hm_filters_hash, htype))
+- hm_filters_hash excludes overlay type — overlay change rebuilds figure, not data
+- hm_data_hash() function: hashes map + dates + match only
+
+STALE DETECTION
+- hm_hash = str((hm_data_hash(map, dates, match), hm_type))
+- Overlay type IS included in stale hash (user expects banner on any filter change)
+- st.rerun() after Show Heatmap — single click works
+
+OVERLAY TYPES
+- Kill Zones: Kill + BotKill → "Reds" colorscale
+- Death Zones: Killed + BotKilled + KilledByStorm → "Oranges"
+- High Traffic: Position + BotPosition → "Blues"
+- Loot Zones: Loot → "Greens"
+- Named Plotly colorscales used (Reds/Oranges/Blues/Greens) — start white at low values
+
+BIN RESOLUTION
+- AmbroseValley: 48 bins (large open map)
+- GrandRift: 40 bins
+- Lockdown: 32 bins (small map)
+
+RELIABILITY THRESHOLDS
+- >= 500 events: Good sample size
+- 50-499 events: Small sample, interpret with caution
+- < 50 events: Very few events, results may not be meaningful
+- Single match with < 500 events: adds "(single match)" to reliability text
+
+FILTER ORDER
+- Map → Date(s) → Match → Overlay Type
+- This order was set by product owner — DO NOT change without approval
+
+------------------------------------------------------------
+TIMELINE TAB
+------------------------------------------------------------
+
+SESSION STATE
+- tl_data: full match DataFrame with elapsed_s column
+- tl_combat: combat-only events with player_label column
+- tl_gantt_base: pre-built Plotly figure (no vline) — deepcopy per render
+- tl_hfig_base: pre-built histogram figure (no vline) — deepcopy per render
+- tl_gantt_traces: list of trace dicts for lookup and kill insight
+- tl_players_used: player type filter value AT LOAD TIME (not current widget)
+- tl_n_h, tl_n_b: human/bot counts computed once at load
+- tl_filters_hash: hash including map, dates, match, player type
+
+GANTT / HISTOGRAM PERFORMANCE
+- Both figures pre-built at Load Match time
+- Each slider move: copy.deepcopy(base) + add_vline(playback_s) only
+- No trace rebuild on slider interaction
+
+PLAYER LABELS
+- Player labels: 👤 P1/P2..., 🤖 B1/B2...
+- Assigned after sorted() of unique UUIDs — ensures consistent ordering with Gantt Y-axis
+- .unique() alone gives arbitrary order based on first ts appearance — wrong
+- Lookup table expander shows Full User ID for each label
+
+PATH STYLE IN TIMELINE
+- Human paths: rgba(88,166,255,0.85), width=2.5 (bold for single-match legibility)
+- Bot paths: rgba(139,148,158,0.65), width=2.5
+- build_map_fig() accepts path_width, path_opacity_human, path_opacity_bot params
+- Map View uses defaults (thin/transparent), Timeline passes bold values
+
+JUMP BUTTONS
+- on_click callbacks write to st.session_state[slider_key] before rerun
+- Back buttons disabled when cur_pos <= 0.0 (per-button, inline)
+- Forward buttons disabled when cur_pos >= total_s (per-button, inline)
+- Slider resets to 0.0 on every Load Match click including same-match reloads
+- at_start/at_end intermediate variables were removed — inline checks only
+
+DATE FILTER
+- Timeline has date checkboxes (same pattern as other tabs)
+- get_match_summaries(df, map, dates_tuple) narrows match dropdown
+- Match count shown: "Showing N matches for Feb 12"
+- Match label shows all dates a match spans: "Feb 10 & Feb 11" for cross-midnight match
+
+STALE DETECTION
+- tl_hash = str((map, dates_tuple, match, player_type))
+- Stale banner shown above button AND near chart
+
+------------------------------------------------------------
+STATS TAB
+------------------------------------------------------------
+
+CHART CACHING
+- All 4 charts cached as (f1, f2, f3, f4, top) tuple under st_charts
+- st_insight dict computed once and cached — never recomputed on rerun
+- Both invalidated when Show Stats clicked
+
+EVENT FILTERING
+- "Game Events" metric and Chart 1 exclude Position/BotPosition movement pings
+- Movement events would dwarf all game events and make charts misleading
+
+TOP 10 KILLERS
+- Labels: "Player 1" through "Player 10" (readable, not UUID)
+- Full UUID in hover tooltip (customdata)
+- Player ID Lookup expander shows Label, Short ID, Full User ID
+- Caption guides designer to cross-reference with Timeline tab
+
+RELIABILITY
+- event_verb dict: Kill→"killing", Loot→"looting", etc. for natural language Quick Read
+- Feb 14 annotated with orange arrow on Events per Day bar chart
+
+FILTER ORDER
+- Map → Date(s) → (no match filter) → Show Stats
+- Stats does not have a match filter — aggregates all matches for selected map/dates
+
+------------------------------------------------------------
+SHARED UX PATTERNS
+------------------------------------------------------------
+
+FILTER GROUPS
+- All filter groups use class="filter-group" with class="filter-group-label"
+- Map: horizontal radio (no pre-selection in Map View, Heatmap, Timeline)
+-       Stats uses "All Maps" as first option with index=0 (pre-selected)
+- Dates: checkboxes with All master toggle + on_change sync
+- Match: selectbox with contextual label (ID | Date | NP NB)
+
+SESSION STATE WIDGET PATTERN
+- Widget keys NEVER set in init_state AND have value= param
+- Use st.session_state.setdefault() instead — idempotent, safe to call every rerun
+- on_change callbacks used for master/individual checkbox sync
+- Callbacks fire before rerun — correct state guaranteed
+
+STALE DETECTION PATTERN
+- Hash computed from current filter widget values
+- Compare against stored hash from last button click
+- Show stale-banner class div if hash differs and tab has been loaded
+- Show stale-map-hint class div near chart/map for users who are scrolled down
+- st.rerun() after all session state writes — single click always works
+
+BUTTON PATTERNS
+- Primary action button: st.columns([2,6,1]) layout, use_container_width=True
+- Sticky bar: position:fixed; bottom:0 (Map View) or column layout (other tabs)
+- Secondary buttons: default style, red on hover (CSS)
+
+EMPTY STATE PATTERN
+- Shown when tab has not been loaded yet (tl_show=False etc.)
+- Rich multi-step guidance with step numbers
+- Tip below steps about interactivity
+
+------------------------------------------------------------
+DEPLOYMENT
+------------------------------------------------------------
+
+- Streamlit Community Cloud, free tier
+- Auto-redeploys on git push to main branch
+- Streamlit pinned to 1.40.2 (avoids JS module fetch errors)
+- Other packages use >= pins (avoids wheel compilation on Python 3.12)
+- data/all_events.parquet committed to repo (2.8MB)
+- assets/minimaps/ committed to repo (NOT gitignored)
+- player_data/ gitignored — raw files not needed after preprocessing
+- MINIMAP_DIR = os.path.join("assets", "minimaps")
+
+------------------------------------------------------------
+KNOWN ISSUES / FUTURE WORK
+------------------------------------------------------------
+
+- Map figure in Timeline still rebuilds fully on each slider move (only gantt/histogram are cached)
+  → Accepted limitation: map slice changes with every tick, so some rebuild is unavoidable
+  → Future: consider pre-rendering map frames at fixed time intervals
+
+- Video export (Plan B) not implemented
+  → Requires kaleido + imageio-ffmpeg
+  → 3-8 minute generation time needs background processing solution
+  → Deferred to v2
+
+- Streamlit slider cannot be controlled with sub-step precision from jump buttons
+  → Jump buttons clamp to [0, total_s] correctly
+  → Minor visual mismatch if slider step_s > jump amount (e.g. +1s button with step=2.0)
+
+- Named heatmap colorscales (Reds/Oranges/Blues/Greens) start white at low values
+  → Visible as bright patches on dark background for low-count cells
+  → Custom transparent-to-color scales were prototyped but reverted — user preferred originals
+  → Future: revisit with a better dark-background-aware palette
