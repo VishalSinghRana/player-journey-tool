@@ -64,9 +64,10 @@ MAP VIEW TAB
 ------------------------------------------------------------
 
 FIGURE CACHING
-- Map figure cached in st.session_state["mv_fig"] keyed by mv_fig_hash
+- Map figure cached in st.session_state["mv_fig"] and st.session_state["mv_fig_hash"]
+- Cache decision driven by mv_filters_hash (hash of current filter values)
+- Figure rebuilds when mv_filters_hash != mv_fig_hash or mv_fig is None
 - Hash includes: map, dates, match, player type, event filter, show_paths, show_markers
-- Rebuilds only when hash changes
 
 PATH RENDERING
 - Human paths: rgba(88,166,255,0.3), width=1 (low opacity for density visualization)
@@ -199,6 +200,19 @@ FILTER ORDER
 - Stats does not have a match filter — aggregates all matches for selected map/dates
 
 ------------------------------------------------------------
+ONBOARDING BANNER
+------------------------------------------------------------
+
+- Dismissible welcome banner shown on first load above the tabs
+- render_onboarding() called between render_header() and st.tabs() in main()
+- Shows 4 cards (one per tab) with icon, name, and one-line description
+- Shows dataset context bar: dates, maps, player count, match count
+- Dismissed via "Got it" button → st.session_state["onboarding_dismissed"] = True + st.rerun()
+- Once dismissed it stays hidden for the rest of the browser session
+- Reappears on next session (session state does not persist across browser sessions)
+- Does NOT use init_state() — setdefault used implicitly via .get() with False fallback
+
+------------------------------------------------------------
 SHARED UX PATTERNS
 ------------------------------------------------------------
 
@@ -241,9 +255,23 @@ DEPLOYMENT
 - Streamlit pinned to 1.40.2 (avoids JS module fetch errors)
 - Other packages use >= pins (avoids wheel compilation on Python 3.12)
 - data/all_events.parquet committed to repo (2.8MB)
+- numpy imported in app.py but not explicitly in requirements.txt — works as pandas
+  transitive dependency on Streamlit Cloud but should be added for explicitness
 - assets/minimaps/ committed to repo (NOT gitignored)
 - player_data/ gitignored — raw files not needed after preprocessing
 - MINIMAP_DIR = os.path.join("assets", "minimaps")
+
+------------------------------------------------------------
+INSIGHTS.MD
+------------------------------------------------------------
+
+- Map comparison table added: all 3 maps across 8 metrics side by side
+  (matches, human players, bot:human ratio, KD ratio, storm %, loot/match, median duration, central kill %)
+- Priority action table includes Success Metric column for every action
+- Success metrics are directional targets for retesting, not SLAs
+  e.g. "Human-vs-human kill rate above 5%" — measure after bot aggression fix
+- AmbroseValley identified as healthiest map; GrandRift as highest priority for fixes
+- generate_insights.py committed to repo as evidence of reproducible analysis
 
 ------------------------------------------------------------
 KNOWN ISSUES / FUTURE WORK
