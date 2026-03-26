@@ -3,134 +3,183 @@
 
 ---
 
-## Dataset Summary
+## Dataset at a Glance
 
 | Metric | Value |
 |---|---|
 | Total records | 89,104 |
-| Date range | Feb 10–14, 2026 (Feb 14 partial) |
-| Maps | AmbroseValley, GrandRift, Lockdown |
-| Unique matches | ~796 |
-| Human players | ~245 unique |
-| Bots | ~71 unique |
-| Event types | 8 |
+| Game events (excl. movement) | 16,045 |
+| Unique matches | 796 |
+| Human players | 245 |
+| Bots | 94 |
+| Date range | Feb 10–14 (Feb 14 partial) |
 
 ---
 
-## How to Read These Insights
+## ⚠️ The Single Biggest Finding: Humans Are Not Killing Each Other
 
-These findings are derived from 5 days of production gameplay data. All observations should be validated against larger datasets before making design changes. Where sample sizes are small (e.g. single-day or single-match views), treat findings as hypotheses to investigate rather than confirmed conclusions.
+Across all 796 matches and 245 human players, **only 3 human-vs-human kills were recorded** out of 2,418 total kills.
 
-**Feb 14 data is incomplete** — it represents a partial day of recording. Any comparisons involving Feb 14 should account for the lower event volume.
+**99.9% of all kills were bots killing players (BotKill: 2,415).**
 
----
-
-## Finding 1 — Storm Deaths Are a Design Signal
-
-Across all maps, a meaningful percentage of deaths are caused by the storm rather than by other players or bots. This is worth monitoring closely.
-
-**Why it matters for Level Design:**
-- A high storm death rate (>20%) suggests the playable zone shrinks too aggressively — players are being eliminated by the environment rather than by gameplay decisions
-- A very low storm death rate (<5%) suggests the storm is not creating enough pressure to drive player movement and encounters
-- The ideal range creates tension without feeling unfair
-
-**What to do:** Use the Stats tab → filter by individual map → check the Quick Read summary for storm death percentage per map. Compare across maps to identify which map's storm timing may need tuning.
+This is not a balancing issue — this is a **fundamental design question**: is LILA BLACK intended to be a PvP game or a PvE game? If PvP combat is a design goal, it is effectively not happening in production. This is the most important finding in this entire report and should be escalated immediately.
 
 ---
 
-## Finding 2 — Bot Kill Ratio Varies by Map
+## Finding 1 — Bots Are Dominating the Kill Economy
 
-The ratio of human kills to bot kills differs noticeably across maps, suggesting bot difficulty or spawn density is not consistent across the three environments.
+| Event | Count | % of kills |
+|---|---|---|
+| BotKill (bot kills player) | 2,415 | 99.8% |
+| Kill (human kills human) | 3 | 0.1% |
 
-**Why it matters for Level Design:**
-- If bots kill humans far more than humans kill bots on a specific map, that map's bot placement, bot AI aggression, or cover distribution may be giving bots an advantage
-- The reverse — humans dominating bots completely — means bots aren't creating meaningful challenge and the map may feel empty once human opponents are eliminated
+Players are almost exclusively being killed by bots, not each other. With 245 humans vs 94 bots, humans outnumber bots 2.6x — yet bots account for virtually all kills. Bots are either too aggressive, too accurate, or positioned too advantageously relative to human spawns.
 
-**What to do:** Use the Stats tab → filter by each map individually → check the "Are bots and humans balanced?" section. The insight callout shows the kill counts and a balance verdict directly.
-
----
-
-## Finding 3 — Kill Clustering Indicates Hot Zones
-
-The Map View and Heatmap tabs consistently reveal that kills are not distributed evenly across maps. They cluster in specific areas, which is expected but worth monitoring for extremity.
-
-**Why it matters for Level Design:**
-- Moderate clustering around cover, chokepoints, and high-loot areas is healthy — it creates memorable moments and predictable engagement zones
-- Extreme clustering (one area accounts for >40% of kills) suggests a dominant position that overshadows the rest of the map — players who control that zone have a disproportionate advantage
-- Dead zones (large map areas with no kills at all) may indicate poor pathing incentives or lack of loot that draws players there
-
-**What to do:** Open the Heatmap tab → select Kill Zones → compare across dates. Persistent hotspots that appear across all 5 days are structural map features, not noise.
+**Recommendation:**
+- Audit bot AI aggression settings — particularly aim accuracy and engagement range
+- Review bot spawn locations relative to human spawn points on all three maps
+- Decide as a product team: is the intended engagement loop PvP-first or PvE-first, and tune accordingly
 
 ---
 
-## Finding 4 — Loot Distribution Should Mirror Traffic
+## Finding 2 — Player Engagement Is Declining Sharply Every Day
 
-The Loot Zones heatmap should roughly correlate with the High Traffic heatmap. Where players spend time, loot should be available. When these two maps diverge significantly, it suggests a mismatch between player movement and resource placement.
+| Date | Game Events | Change |
+|---|---|---|
+| Feb 10 | 6,170 | baseline |
+| Feb 11 | 4,110 | −33% |
+| Feb 12 | 2,951 | −28% |
+| Feb 13 | 1,969 | −33% |
+| Feb 14 | 845 | partial day |
 
-**Why it matters for Level Design:**
-- If players traffic an area heavily but loot density is low there, players are moving through without finding resources — potentially frustrating
-- If loot is concentrated in an area players don't naturally visit, the loot placement is wasted and may need to be redistributed
+**In 4 days, daily game events dropped by 68%.** A consistent one-third daily decline is not noise — this is a retention signal that needs immediate attention.
 
-**What to do:** Toggle between High Traffic and Loot Zones overlays on the Heatmap tab for the same map. Look for areas where one is high and the other is low.
-
----
-
-## Finding 5 — Match Duration Distribution
-
-The Timeline tab reveals how long matches actually last. A healthy match duration provides enough time for multiple combat engagements without overstaying.
-
-**Why it matters for Level Design:**
-- Very short matches (under 2 minutes) suggest the storm closes too fast or initial spawns are placing players too close together
-- Very long matches (over 15 minutes) may indicate too much map area, low player density, or a storm that moves too slowly
-
-**What to do:** Load several matches in the Timeline tab and observe the slider range (match duration). Compare across maps — some maps may systematically produce shorter or longer matches.
+**Recommendation:**
+- Identify the drop-off point in the player journey — is it after the first session or the second?
+- Cross-reference with any patches deployed between Feb 10–13
+- Bot difficulty (Finding 1) is the most likely cause — players being killed relentlessly by bots and not returning
 
 ---
 
-## Finding 6 — Player Activity Drops at Match Start and End
+## Finding 3 — Kill Zones Are Heavily Centralised on Every Map
 
-The Event Density histogram in the Timeline tab consistently shows a pattern: low activity at the very start of a match (players landing and looting), a peak activity phase (combat), and a drop-off at the end (fewer surviving players).
+All three maps show kills concentrated in the central zone (400–600px × 400–600px).
 
-**Why it matters for Level Design:**
-- The opening phase length tells you how long players take to arm themselves before first contact — if this is too long, early game feels passive
-- The peak activity timing tells you when most combat occurs — this should ideally not be too early (players haven't found gear) or too late (map is too large)
+| Map | Central zone kills | % of all kills |
+|---|---|---|
+| AmbroseValley | 614 | **34.1%** |
+| GrandRift | 64 | **33.2%** |
+| Lockdown | 184 (two adjacent zones) | **43.2%** |
 
-**What to do:** Load a representative match in the Timeline tab. Observe the histogram — the first visible spike of kill events marks the end of the opening phase. Scrub to that point on the map to see where first contact happens.
+One-third to nearly half of all kill activity happens in a small central region of every map. The outer thirds are effectively dead zones — players have no incentive to spread out.
 
----
-
-## Finding 7 — Cross-Midnight Match
-
-One match spans both Feb 10 and Feb 11 (it started late on Feb 10 and finished on Feb 11). This match appears in the dropdown with both dates in its label. When selecting only Feb 10 or only Feb 11, this match is visible in both — this is expected behaviour, not a data error.
-
-This match may have extended match duration or unusual player retention worth investigating in the Timeline tab.
-
----
-
-## Recommendations for Level Designers
-
-### Immediate Actions
-
-1. **Identify dominant kill zones on each map** — use Heatmap → Kill Zones → compare all 5 days. Any zone that appears consistently hot across all days is a structural issue, not a statistical quirk.
-
-2. **Check storm death percentage per map** — use Stats tab → filter by map → read the Quick Read callout. Maps with storm death >20% may need storm timing adjustment.
-
-3. **Compare loot vs traffic distribution** — use Heatmap → toggle between High Traffic and Loot Zones for each map. Identify mismatches.
-
-### Investigations to Conduct
-
-1. **Replay the highest-kill matches** — use Stats tab → Top 10 Human Killers → Player ID Lookup → copy UUID → use in Timeline tab to watch that player's match. Outlier performers may be exploiting positional advantages.
-
-2. **Compare maps side by side** — run Stats tab filtered to each map in separate browser tabs. The Quick Read callout gives instant KD ratio, bot ratio, and storm death percentage for direct comparison.
-
-3. **Look at Feb 14 data in isolation** — it's a partial day so volume is lower, but the patterns that appear may be earlier-day players who return consistently, which is a useful engagement signal.
+**Recommendation:**
+- Place high-value loot in outer map zones to incentivise peripheral movement
+- Review cover distribution — central zones may offer the best cover, making them self-reinforcing
+- GrandRift shows a secondary cluster at the south-central corridor — examine for chokepoints
 
 ---
 
-## Limitations of This Dataset
+## Finding 4 — GrandRift Has Effectively Become a Bot-Only Map
 
-- **5 days is a short window** — patterns may reflect a specific meta, patch state, or player cohort rather than stable behaviour
-- **Bot behaviour is scripted** — bot kills and deaths reflect AI tuning, not organic player decisions. Weight human-vs-human events more heavily for design decisions
-- **Feb 14 is partial** — all Feb 14 event counts are lower than other days by definition
-- **Match timestamps are player-relative** — the Timeline tab normalizes per player, meaning players who joined mid-match have their timeline starting from their join point, not the match start
-- **No session-level data** — we can't tell if a player played multiple matches per day or if they won/lost, only what events occurred
+| Map | Humans | Bots | Ratio | Matches |
+|---|---|---|---|---|
+| AmbroseValley | 217 | 51 | 0.2x | 566 |
+| Lockdown | 79 | 41 | 0.5x | 169 |
+| **GrandRift** | **29** | **30** | **1.0x** | **59** |
+
+GrandRift is the only map where bots match or outnumber humans. With only 29 unique humans across 59 matches, it averages roughly 0.5 humans per match. Players are avoiding this map entirely.
+
+**Recommendation:**
+- Investigate why human players are not choosing GrandRift — map visibility in the UI, difficulty, or early negative experience
+- With a 9.6% storm death rate (highest of all maps), GrandRift may feel doubly punishing — bot pressure plus storm pressure
+- Consider temporarily reducing GrandRift bot count to attract human players back
+
+---
+
+## Finding 5 — Storm Deaths Signal Pacing Problems on Two Maps
+
+| Map | Storm Death % | Assessment |
+|---|---|---|
+| AmbroseValley | 3.4% | ✅ Healthy — storm is background pressure |
+| Lockdown | 9.2% | ⚠️ Storm may be closing too fast |
+| GrandRift | 9.6% | ⚠️ Storm combined with bot pressure feels unfair |
+
+AmbroseValley's 3.4% is the benchmark — the storm creates urgency without being the primary killer. Lockdown and GrandRift at ~9-10% suggest players are being caught by the storm rather than choosing to engage.
+
+**Recommendation:**
+- Extend the safe zone timer on Lockdown and GrandRift by 15–20%
+- For GrandRift specifically, players under constant bot pressure shouldn't also be racing the storm
+
+---
+
+## Finding 6 — Loot Per Match Is Reasonable but GrandRift Players Can't Reach It
+
+| Map | Loot Pickups | Per Match |
+|---|---|---|
+| AmbroseValley | 9,955 | 17.6 |
+| Lockdown | 2,050 | 12.1 |
+| GrandRift | 880 | 14.9 |
+
+Loot per match is broadly consistent across maps. However given GrandRift's near-zero human population (Finding 4), low absolute loot numbers suggest humans are being eliminated before collecting loot — not that loot is absent.
+
+**Recommendation:**
+- Move some GrandRift loot closer to human spawn points to give players a fighting chance before first bot contact
+- Use the Heatmap tool (Loot Zones vs High Traffic overlay) to verify loot placement aligns with where players actually travel
+
+---
+
+## Finding 7 — Match Duration Is Healthy on AmbroseValley, Slow on Lockdown
+
+| Map | Median Duration | Min | Max |
+|---|---|---|---|
+| AmbroseValley | **362s (6 min)** | 13s | 890s |
+| GrandRift | 422s (7 min) | 30s | 732s |
+| Lockdown | **448s (7.5 min)** | 32s | 825s |
+
+The very short minimum durations (13–32s) are likely disconnections or instant eliminations — outliers, not genuine sessions. Excluding these, match durations are reasonable. Lockdown's higher median combined with its higher storm death rate (Finding 5) suggests matches run long enough that the storm becomes a significant factor.
+
+---
+
+## Finding 8 — One Player Accounts for 9.4% of All Bot Kills
+
+| Player | Kills | % of all BotKills |
+|---|---|---|
+| 94d042cb... | 227 | 9.4% |
+| 10648aa3... | 201 | 8.3% |
+| a0738c7c... | 79 | 3.3% |
+| e7ac0138... | 69 | 2.9% |
+| f4e072fa... | 65 | 2.7% |
+
+The top 2 players alone account for **17.7% of all bot kills** in the entire dataset. Given that total human-vs-human kills are only 3, these are almost entirely PvE kills. This level of concentration suggests either a dominant map position is being exploited, or these players represent an extreme skill ceiling that is unreachable for the average player.
+
+**Recommendation:**
+- Use the Timeline tab to replay matches involving player 94d042cb (94d042cb-a0f...) and observe movement patterns
+- If they are consistently exploiting a specific position, address that zone's cover and sightlines
+- Consider whether the skill gap between top and average players is too wide for a healthy matchmaking pool of 245 players
+
+---
+
+## Priority Action List
+
+| Priority | Action | Finding |
+|---|---|---|
+| 🔴 P0 | Clarify PvP vs PvE design intent — only 3 human kills recorded | Finding 1 |
+| 🔴 P0 | Investigate 33%/day engagement decline — retention emergency | Finding 2 |
+| 🔴 P0 | Audit bot AI aggression — bots account for 99.9% of kills | Finding 1 |
+| 🔴 P0 | Investigate GrandRift abandonment — 29 humans vs 30 bots | Finding 4 |
+| 🟡 P1 | Redistribute loot and cover to peripheral map zones | Finding 3 |
+| 🟡 P1 | Extend storm timer on Lockdown and GrandRift by 15–20% | Finding 5 |
+| 🟡 P1 | Replay player 94d042cb matches — possible position exploit | Finding 8 |
+| 🟢 P2 | Move GrandRift loot closer to human spawn points | Finding 6 |
+| 🟢 P2 | Review Lockdown match pacing (longest duration + high storm deaths) | Finding 7 |
+
+---
+
+## Data Limitations
+
+- **5 days is a short window** — trends may reflect launch volatility, not stable long-term behaviour
+- **Feb 14 is a partial day** — event counts are lower by definition, excluded from daily trend analysis
+- **Bot behaviour is scripted** — bot kill/death patterns reflect AI tuning, not organic player decisions
+- **No session continuity data** — we cannot confirm whether the daily decline reflects the same players churning or different players each day
+- **3 human kills total** — PvP analysis is statistically meaningless at this sample size; this is a product signal, not a statistical finding worth modelling
