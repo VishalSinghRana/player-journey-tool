@@ -160,19 +160,36 @@ The top 2 players alone account for **17.7% of all bot kills** in the entire dat
 
 ---
 
+## Map Comparison at a Glance
+
+| Metric | AmbroseValley | Lockdown | GrandRift | Best |
+|---|---|---|---|---|
+| Matches | 566 | 169 | 59 | AmbroseValley |
+| Human players | 217 | 79 | 29 | AmbroseValley |
+| Bot:Human ratio | 0.2x | 0.5x | 1.0x | AmbroseValley |
+| KD ratio | 3.56 | 2.30 | 3.71 | — |
+| Storm death % | 3.4% | 9.2% | 9.6% | AmbroseValley |
+| Loot per match | 17.6 | 12.1 | 14.9 | AmbroseValley |
+| Median match duration | 362s (6 min) | 448s (7.5 min) | 422s (7 min) | AmbroseValley |
+| Central zone kill % | 34.1% | 43.2% | 33.2% | GrandRift (least concentrated) |
+
+**AmbroseValley is the healthiest map across almost every dimension.** GrandRift is the most concerning — equal bot:human ratio, highest storm death rate, fewest matches, and fewest human players. Lockdown sits in between but has a storm pacing problem. If the team can only fix one map before next review, **GrandRift** should be the priority.
+
+---
+
 ## Priority Action List
 
-| Priority | Action | Finding |
-|---|---|---|
-| 🔴 P0 | Clarify PvP vs PvE design intent — only 3 human kills recorded | Finding 1 |
-| 🔴 P0 | Investigate 33%/day engagement decline — retention emergency | Finding 2 |
-| 🔴 P0 | Audit bot AI aggression — bots account for 99.9% of kills | Finding 1 |
-| 🔴 P0 | Investigate GrandRift abandonment — 29 humans vs 30 bots | Finding 4 |
-| 🟡 P1 | Redistribute loot and cover to peripheral map zones | Finding 3 |
-| 🟡 P1 | Extend storm timer on Lockdown and GrandRift by 15–20% | Finding 5 |
-| 🟡 P1 | Replay player 94d042cb matches — possible position exploit | Finding 8 |
-| 🟢 P2 | Move GrandRift loot closer to human spawn points | Finding 6 |
-| 🟢 P2 | Review Lockdown match pacing (longest duration + high storm deaths) | Finding 7 |
+| Priority | Action | Success Metric | Finding |
+|---|---|---|---|
+| 🔴 P0 | Clarify PvP vs PvE design intent — only 3 human kills recorded | Decision documented within 1 sprint | Finding 1 |
+| 🔴 P0 | Investigate 33%/day engagement decline — retention emergency | Identify root cause within 1 week; halt decline within 2 weeks | Finding 2 |
+| 🔴 P0 | Reduce bot AI aggression on all maps | Human-vs-human kill rate above 5%; daily event drop halted | Finding 1 |
+| 🔴 P0 | Investigate GrandRift abandonment — 29 humans vs 30 bots | Human player count on GrandRift doubles within 2 weeks of fix | Finding 4 |
+| 🟡 P1 | Redistribute loot and cover to peripheral map zones | Central zone kill % drops below 25% on all maps | Finding 3 |
+| 🟡 P1 | Extend storm timer on Lockdown and GrandRift by 15–20% | Storm death % drops to below 5% on both maps | Finding 5 |
+| 🟡 P1 | Replay player 94d042cb matches — investigate position exploit | Confirm or rule out exploit within 3 days | Finding 8 |
+| 🟢 P2 | Move GrandRift loot closer to human spawn points | Loot per match on GrandRift reaches 15+ | Finding 6 |
+| 🟢 P2 | Review Lockdown match pacing | Median match duration reduces to under 400s | Finding 7 |
 
 ---
 
