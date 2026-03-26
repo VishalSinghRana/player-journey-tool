@@ -2,7 +2,7 @@
 # One-time analysis script used to extract player behaviour statistics
 # from data/all_events.parquet for the INSIGHTS.md report.
 # Run with: python generate_insights.py
-# Output: printed to terminal — numbers were manually transferred to INSIGHTS.md
+
 import pandas as pd
 import numpy as np
 
