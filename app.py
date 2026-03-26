@@ -230,6 +230,54 @@ def match_label(match_id):
     return f"{match_id[:8]}…{match_id[-4:]}"
 
 # ── Session state ─────────────────────────────────────────────────────────────
+def render_onboarding():
+    """Dismissible welcome banner — shown on first load, hidden after user clicks Got It."""
+    if st.session_state.get("onboarding_dismissed", False):
+        return
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0d1f2d,#161b22);
+                border:1px solid #1f6feb;border-radius:10px;
+                padding:18px 22px;margin-bottom:18px;">
+      <div style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;font-weight:700;
+                  color:#58a6ff;margin-bottom:10px;">👋 Welcome to the LILA BLACK Level Intelligence Dashboard</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:14px;">
+        <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px;">
+          <div style="font-size:1.2rem;">🗺️</div>
+          <div style="font-family:'Rajdhani',sans-serif;font-weight:700;color:#e6edf3;
+                      font-size:0.9rem;margin:4px 0;">Map View</div>
+          <div style="font-size:0.75rem;color:#8b949e;">Overlay player paths and combat events on the minimap. Filter by match, date, and event type.</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px;">
+          <div style="font-size:1.2rem;">🔥</div>
+          <div style="font-family:'Rajdhani',sans-serif;font-weight:700;color:#e6edf3;
+                      font-size:0.9rem;margin:4px 0;">Heatmap</div>
+          <div style="font-size:0.75rem;color:#8b949e;">See density maps for kill zones, death zones, high-traffic areas, and loot pickup locations.</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px;">
+          <div style="font-size:1.2rem;">⏱️</div>
+          <div style="font-family:'Rajdhani',sans-serif;font-weight:700;color:#e6edf3;
+                      font-size:0.9rem;margin:4px 0;">Timeline</div>
+          <div style="font-size:0.75rem;color:#8b949e;">Replay a single match second-by-second. Use the scrub slider and jump buttons to investigate key moments.</div>
+        </div>
+        <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px;">
+          <div style="font-size:1.2rem;">📊</div>
+          <div style="font-family:'Rajdhani',sans-serif;font-weight:700;color:#e6edf3;
+                      font-size:0.9rem;margin:4px 0;">Stats</div>
+          <div style="font-size:0.75rem;color:#8b949e;">Aggregate charts across all matches — event distribution, daily trends, bot vs human balance, top killers.</div>
+        </div>
+      </div>
+      <div style="font-size:0.75rem;color:#444d56;font-family:'Share Tech Mono',monospace;">
+        📅 Data: Feb 10–14, 2026 &nbsp;·&nbsp; 🗺️ Maps: AmbroseValley, GrandRift, Lockdown
+        &nbsp;·&nbsp; 👤 245 human players &nbsp;·&nbsp; 🎮 796 matches
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("Got it — hide this", key="dismiss_onboarding"):
+        st.session_state["onboarding_dismissed"] = True
+        st.rerun()
+
+
 def init_state():
     for k,v in {
         "mv_show":False, "mv_result":None,
@@ -2163,6 +2211,7 @@ def main():
     init_state()
     df = load_data()
     render_header()
+    render_onboarding()
     tab1,tab2,tab3,tab4 = st.tabs([
         "🗺️  MAP VIEW","🔥  HEATMAPS","⏱️  TIMELINE","📊  STATS",
     ])
