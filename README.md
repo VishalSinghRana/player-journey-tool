@@ -130,3 +130,5 @@ Streamlit Cloud picks up the push and redeploys in ~1–2 minutes.
 - [Plotly](https://plotly.com/python/) — Interactive charts and maps
 - [Pandas](https://pandas.pydata.org) — Data manipulation
 - [NumPy](https://numpy.org) — Heatmap histogram computation
+
+NOTE:- The Screenshots are in the Screenshot folder. THe legends in the Map are clickable, Selecting/Deselecting which will make the event appear/disappear from the map.
